@@ -132,13 +132,19 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     open func terminate() {}
     
     open func start() {
-        if (self.popup || self.preview) && self.locked {
+        // Upstream behavior: popup/preview readers only run on-demand and
+        // bail out early when the popup window is closed (`locked`). For
+        // history-enabled readers we override that — we want the data to
+        // accumulate even when the user never opens the popup, otherwise
+        // the per-process readers (CPU/RAM/Net/Disk/Battery) end up with
+        // a near-empty time series.
+        if (self.popup || self.preview) && self.locked && !self.history {
             DispatchQueue.global(qos: .background).async {
                 self.read()
             }
             return
         }
-        
+
         if !self.initlizalized {
             if self.alignToSecondBoundary {
                 self.startAlignedRepeater()
@@ -151,7 +157,7 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         } else {
             self.repeatTask?.start()
         }
-        
+
         self.active = true
     }
     

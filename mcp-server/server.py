@@ -396,11 +396,13 @@ def find_spikes(
             if chosen_field is None:
                 for cand in (
                     "totalUsage",
-                    "load",
+                    "used",          # RAM/Disk used bytes
                     "level",
                     "temperature",
-                    "value",
+                    "load",
                     "frequency",
+                    "download",
+                    "value",
                 ):
                     if isinstance(v.get(cand), (int, float)):
                         chosen_field = cand
