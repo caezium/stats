@@ -42,11 +42,10 @@ The architecture is:
 
 ## History view
 
-A native SwiftUI + Charts surface, reachable three ways:
+Native SwiftUI + Charts surface inside the Stats settings window. Two entry points, same destination:
 
-- **Stats settings sidebar → History** — embedded in the existing settings window, second item under "Dashboard".
-- **Right-click any Stats menu bar icon** (CPU / RAM / Network / etc.) → choose **Open History…** (or `⌘Y` while the menu is open). Opens a dedicated window. Same right-click menu also has **Settings…** (`⌘,`) and **Quit Stats** (`⌘Q`).
-- **Settings → Application → History → "Open"** — also opens the dedicated window.
+- **Stats settings sidebar → History** — second item under "Dashboard".
+- **Right-click any Stats menu bar icon** (CPU / RAM / Network / etc.) → **Open History…** (or `⌘Y` while the menu is open). Opens the settings window and switches to History. The same right-click menu also has **Settings…** (`⌘,`) and **Quit Stats** (`⌘Q`).
 
 Six chart cards (CPU usage, RAM used, network throughput with ↓/↑ split, battery level, CPU temperature, CPU frequency) plus three top-process tables (CPU peak %, RAM peak bytes, Network delta bytes ↓/↑ rolled up by app name across pids). Time-range picker — 5m / 1h / 6h / 24h / 7d. Auto-refreshes every 5 seconds.
 

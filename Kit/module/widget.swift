@@ -413,7 +413,11 @@ public class SWidget {
     }
 
     @objc private func openHistoryFromMenu() {
-        NotificationCenter.default.post(name: .openHistory, object: nil)
+        // Show the settings window and switch to the History sidebar entry.
+        // toggleSettings makes the window visible AND calls openMenu(name)
+        // which activates the matching sidebar MenuItem — that posts
+        // openModuleSettings which swaps the main view to historyView.
+        NotificationCenter.default.post(name: .toggleSettings, object: nil, userInfo: ["module": "History"])
     }
 
     @objc private func openSettingsFromMenu() {

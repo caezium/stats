@@ -141,11 +141,7 @@ class ApplicationSettings: NSStackView {
                 action: #selector(self.toggleQueryServer),
                 state: self.queryServerEnabled
             )),
-            PreferencesRow(localizedString("Query port"), component: textView("127.0.0.1:\(self.queryServerPort)")),
-            PreferencesRow(localizedString("History window"), component: buttonView(
-                #selector(self.openHistoryWindow),
-                text: localizedString("Open")
-            ))
+            PreferencesRow(localizedString("Query port"), component: textView("127.0.0.1:\(self.queryServerPort)"))
         ]))
         
         self.combinedModulesView = PreferencesSection([
@@ -551,9 +547,6 @@ class ApplicationSettings: NSStackView {
         QueryServer.shared.enabled = on
     }
 
-    @objc private func openHistoryWindow(_ sender: NSButton) {
-        HistoryWindowController.shared.show()
-    }
 }
 
 private class ModuleSelectorView: NSStackView {
