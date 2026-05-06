@@ -40,18 +40,16 @@ The architecture is:
 | `Stats/AppDelegate.swift` | Starts/stops `QueryServer` with the app lifecycle. |
 | `Stats/Views/AppSettings.swift` | New "History" section in Settings → retention period + query server toggle. |
 
-## Dashboard
+## History window
 
-There's a built-in browser dashboard at **http://127.0.0.1:9276/** — open it from **Settings → Application → History → "Open in browser"** (or just navigate to that URL in any browser).
+A native macOS window with charts, opened in two ways:
 
-What's on the page:
-- Six aggregate line charts: CPU usage, RAM used, network throughput, battery level, CPU temperature, CPU frequency.
-- Time-range scrubber: 5m / 1h / 6h / 24h / 7d. Longer ranges automatically downsample server-side via the `bucket` query param.
-- Top-process tables for CPU (peak %), RAM (peak bytes), Network (delta bytes ↓↑) over the selected window — rolled up by app name across all pids.
-- Auto-refresh every 5 seconds; toggle off via the "auto" checkbox.
-- Loopback only — same security model as the rest of the QueryServer.
+- **Right-click any Stats menu bar icon** (CPU / RAM / Network / etc.) → choose **Open History…** (or `⌘Y` while the menu is open). The same right-click menu also has **Settings…** (`⌘,`) and **Quit Stats** (`⌘Q`).
+- **Settings → Application → History → "Open"**.
 
-The HTML lives at `dashboard/index.html` in the repo. The QueryServer reads it at request time from a few candidate paths (bundle Resources, `~/Desktop/stats/dashboard/`, `~/Library/Application Support/Stats/dashboard.html`), so you can iterate on the dashboard without rebuilding the app.
+Six chart cards (CPU usage, RAM used, network throughput with ↓/↑ split, battery level, CPU temperature, CPU frequency) plus three top-process tables (CPU peak %, RAM peak bytes, Network delta bytes ↓/↑ rolled up by app name across pids). Time-range picker — 5m / 1h / 6h / 24h / 7d. Auto-refreshes every 5 seconds.
+
+Built with SwiftUI + Apple's Charts framework. Reads `DB.shared.findTimeSeries(...)` directly in-process — no HTTP, no extra processes, works the moment Stats is running. Requires macOS 13 or newer (older systems get a stub).
 
 ## QueryServer endpoints
 

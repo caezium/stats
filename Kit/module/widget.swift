@@ -351,6 +351,13 @@ public class SWidget {
     }
     
     @objc private func togglePopup() {
+        // Right-click → show our context menu (History, Settings, Quit).
+        // Left-click → existing popup-toggle behavior.
+        if let event = NSApp.currentEvent, event.type == .rightMouseUp || event.type == .rightMouseDown
+            || (event.type == .leftMouseUp && event.modifierFlags.contains(.control)) {
+            self.showContextMenu()
+            return
+        }
         if let item = self.menuBarItem, let window = item.button?.window {
             NotificationCenter.default.post(name: .togglePopup, object: nil, userInfo: [
                 "module": self.module,
@@ -359,6 +366,62 @@ public class SWidget {
                 "center": window.frame.width/2
             ])
         }
+    }
+
+    private func showContextMenu() {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let historyItem = NSMenuItem(
+            title: localizedString("Open History…"),
+            action: #selector(self.openHistoryFromMenu),
+            keyEquivalent: "y"
+        )
+        historyItem.keyEquivalentModifierMask = [.command]
+        historyItem.target = self
+        menu.addItem(historyItem)
+
+        let settingsItem = NSMenuItem(
+            title: localizedString("Settings…"),
+            action: #selector(self.openSettingsFromMenu),
+            keyEquivalent: ","
+        )
+        settingsItem.keyEquivalentModifierMask = [.command]
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(
+            title: localizedString("Quit Stats"),
+            action: #selector(self.quitFromMenu),
+            keyEquivalent: "q"
+        )
+        quitItem.keyEquivalentModifierMask = [.command]
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        // Anchor under the status item's button. popUp(positioning:at:in:)
+        // is synchronous so we don't need to swap menus on/off the status
+        // item — left-click keeps its existing toggle-popup behavior.
+        if let button = self.menuBarItem?.button {
+            let anchor = NSPoint(x: 0, y: button.bounds.height + 4)
+            menu.popUp(positioning: nil, at: anchor, in: button)
+        } else {
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
+    }
+
+    @objc private func openHistoryFromMenu() {
+        NotificationCenter.default.post(name: .openHistory, object: nil)
+    }
+
+    @objc private func openSettingsFromMenu() {
+        NotificationCenter.default.post(name: .toggleSettings, object: nil, userInfo: ["module": self.module])
+    }
+
+    @objc private func quitFromMenu() {
+        NSApp.terminate(nil)
     }
 }
 

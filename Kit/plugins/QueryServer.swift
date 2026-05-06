@@ -112,9 +112,11 @@ public final class QueryServer {
             var buffer = accumulated
             if let data = data { buffer.append(data) }
 
+            // We only need the request line + headers to route a GET.
             if let header = String(data: buffer, encoding: .utf8),
                header.contains("\r\n\r\n") || isComplete {
-                self.dispatch(header, on: conn)
+                let response = self.route(header)
+                self.send(response, on: conn)
                 return
             }
 
@@ -127,59 +129,6 @@ public final class QueryServer {
         }
     }
 
-    private func dispatch(_ raw: String, on conn: NWConnection) {
-        guard let firstLine = raw.split(separator: "\r\n", maxSplits: 1).first else {
-            self.send(Self.errorJSON("malformed request"), on: conn); return
-        }
-        let parts = firstLine.split(separator: " ")
-        guard parts.count >= 2, parts[0] == "GET" else {
-            self.send(Self.errorJSON("only GET supported"), on: conn); return
-        }
-        let target = String(parts[1])
-        let split = target.split(separator: "?", maxSplits: 1)
-        let path = String(split[0])
-
-        // HTML routes get their own response path so we can stream the file.
-        switch path {
-        case "/", "/dashboard", "/dashboard/", "/index.html":
-            if let html = self.loadDashboardHTML() {
-                self.sendHTML(html, on: conn)
-            } else {
-                self.sendStatus(404, "dashboard not found — see HISTORY_MCP.md", on: conn)
-            }
-            return
-        default:
-            self.send(self.route(raw), on: conn)
-        }
-    }
-
-    private func loadDashboardHTML() -> String? {
-        // Search order:
-        //  1) Bundled into the app (Resources/dashboard/index.html) when packaged.
-        //  2) Source tree dashboard/index.html for dev iteration.
-        //  3) ~/Library/Application Support/Stats/dashboard.html as a user override.
-        let fm = FileManager.default
-        var candidates: [URL] = []
-
-        if let bundled = Bundle(for: type(of: self)).url(forResource: "index", withExtension: "html", subdirectory: "dashboard") {
-            candidates.append(bundled)
-        }
-        if let main = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "dashboard") {
-            candidates.append(main)
-        }
-        if let home = ProcessInfo.processInfo.environment["HOME"] {
-            candidates.append(URL(fileURLWithPath: home).appendingPathComponent("Desktop/stats/dashboard/index.html"))
-            candidates.append(URL(fileURLWithPath: home).appendingPathComponent("Library/Application Support/Stats/dashboard.html"))
-        }
-
-        for url in candidates {
-            if fm.fileExists(atPath: url.path), let html = try? String(contentsOf: url, encoding: .utf8) {
-                return html
-            }
-        }
-        return nil
-    }
-
     private func send(_ json: String, on conn: NWConnection) {
         let body = Data(json.utf8)
         let head = """
@@ -188,41 +137,6 @@ Content-Type: application/json; charset=utf-8\r
 Content-Length: \(body.count)\r
 Cache-Control: no-store\r
 Access-Control-Allow-Origin: *\r
-Connection: close\r
-\r
-
-"""
-        var payload = Data(head.utf8)
-        payload.append(body)
-        conn.send(content: payload, completion: .contentProcessed { _ in
-            conn.cancel()
-        })
-    }
-
-    private func sendHTML(_ html: String, on conn: NWConnection) {
-        let body = Data(html.utf8)
-        let head = """
-HTTP/1.1 200 OK\r
-Content-Type: text/html; charset=utf-8\r
-Content-Length: \(body.count)\r
-Cache-Control: no-store\r
-Connection: close\r
-\r
-
-"""
-        var payload = Data(head.utf8)
-        payload.append(body)
-        conn.send(content: payload, completion: .contentProcessed { _ in
-            conn.cancel()
-        })
-    }
-
-    private func sendStatus(_ code: Int, _ message: String, on conn: NWConnection) {
-        let body = Data("\(code) \(message)\n".utf8)
-        let head = """
-HTTP/1.1 \(code) \(message)\r
-Content-Type: text/plain; charset=utf-8\r
-Content-Length: \(body.count)\r
 Connection: close\r
 \r
 

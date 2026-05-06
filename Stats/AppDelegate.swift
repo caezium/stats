@@ -81,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         NotificationCenter.default.addObserver(self, selector: #selector(listenForAppPause), name: .pause, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleToggleSettings(_:)), name: .toggleSettings, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(listenForOpenHistory), name: .openHistory, object: nil)
         NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             self?.handleKeyEvent(event)
         }
@@ -97,6 +98,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         QueryServer.shared.stop()
         modules.forEach{ $0.terminate() }
         SystemStats.shared.terminate()
+    }
+
+    @objc func listenForOpenHistory() {
+        DispatchQueue.main.async {
+            HistoryWindowController.shared.show()
+        }
     }
     
     deinit {
