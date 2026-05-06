@@ -142,7 +142,11 @@ class ApplicationSettings: NSStackView {
                 state: self.queryServerEnabled
             )),
             PreferencesRow(localizedString("Query port"), component: textView("127.0.0.1:\(self.queryServerPort)")),
-            PreferencesRow(localizedString("Dashboard"), component: buttonView(
+            PreferencesRow(localizedString("History window"), component: buttonView(
+                #selector(self.openHistoryWindow),
+                text: localizedString("Open")
+            )),
+            PreferencesRow(localizedString("Browser dashboard"), component: buttonView(
                 #selector(self.openDashboard),
                 text: localizedString("Open in browser")
             ))
@@ -555,6 +559,10 @@ class ApplicationSettings: NSStackView {
         if let url = URL(string: "http://127.0.0.1:\(self.queryServerPort)/") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    @objc private func openHistoryWindow(_ sender: NSButton) {
+        HistoryWindowController.shared.show()
     }
 }
 
