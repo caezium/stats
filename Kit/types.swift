@@ -68,6 +68,15 @@ public let TemperatureUnits: [KeyValue_t] = [
     KeyValue_t(key: "fahrenheit", value: "Fahrenheit", additional: UnitTemperature.fahrenheit)
 ]
 
+public let HistoryRetentionOptions: [KeyValue_t] = [
+    KeyValue_t(key: "1", value: "1 day"),
+    KeyValue_t(key: "3", value: "3 days"),
+    KeyValue_t(key: "7", value: "7 days"),
+    KeyValue_t(key: "14", value: "14 days"),
+    KeyValue_t(key: "30", value: "30 days"),
+    KeyValue_t(key: "90", value: "90 days")
+]
+
 public let CombinedModulesSpacings: [KeyValue_t] = [
     KeyValue_t(key: "none", value: "None"),
     KeyValue_t(key: "1", value: "1", additional: 1),

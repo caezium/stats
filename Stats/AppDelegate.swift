@@ -77,6 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
         self.defaultValues()
         self.icon()
+        QueryServer.shared.start()
         
         NotificationCenter.default.addObserver(self, selector: #selector(listenForAppPause), name: .pause, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleToggleSettings(_:)), name: .toggleSettings, object: nil)
@@ -93,6 +94,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func applicationWillTerminate(_ aNotification: Notification) {
+        QueryServer.shared.stop()
         modules.forEach{ $0.terminate() }
         SystemStats.shared.terminate()
     }

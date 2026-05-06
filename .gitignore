@@ -3,6 +3,7 @@
 Pods
 Carthage
 build
+build_check
 xcuserdata
 
 Stats.dmg
@@ -14,3 +15,9 @@ SMC/smc
 
 Cartfile.resolved
 web
+
+# History/MCP fork
+mcp-server/.venv/
+mcp-server/uv.lock
+mcp-server/__pycache__/
+mcp-server/*.egg-info/

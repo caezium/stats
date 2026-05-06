@@ -109,14 +109,32 @@ using namespace std;
     leveldb::Iterator *it = db->NewIterator(readOptions);
     leveldb::Slice slice = leveldb::Slice(prefix.UTF8String);
     NSMutableArray *array = [[NSMutableArray alloc] init];
-    
+
     for (it->Seek(slice); it->Valid() && it->key().starts_with(slice); it->Next()) {
         NSString *value = [[NSString alloc] initWithCString:it->value().ToString().c_str() encoding:[NSString defaultCStringEncoding]];
         [array addObject:value];
     }
     delete it;
-    
+
     return array;
+}
+
+-(NSDictionary *)findKeysAndValues:(NSString *)prefix {
+    leveldb::ReadOptions readOptions;
+    leveldb::Iterator *it = db->NewIterator(readOptions);
+    leveldb::Slice slice = leveldb::Slice(prefix.UTF8String);
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
+
+    for (it->Seek(slice); it->Valid() && it->key().starts_with(slice); it->Next()) {
+        NSString *k = [[NSString alloc] initWithCString:it->key().ToString().c_str() encoding:NSUTF8StringEncoding];
+        NSString *v = [[NSString alloc] initWithCString:it->value().ToString().c_str() encoding:NSUTF8StringEncoding];
+        if (k != nil && v != nil) {
+            dict[k] = v;
+        }
+    }
+    delete it;
+
+    return dict;
 }
 
 -(bool)deleteOne:(NSString *)key {

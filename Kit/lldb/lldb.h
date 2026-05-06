@@ -21,6 +21,7 @@
 -(NSString *)findOne:(NSString *)key;
 -(NSString *)findLast:(NSString *)prefix;
 -(NSArray *)findMany:(NSString *)prefix;
+-(NSDictionary *)findKeysAndValues:(NSString *)prefix;
 
 -(bool)deleteOne:(NSString *)key;
 -(bool)deleteMany:(NSArray*)keys;

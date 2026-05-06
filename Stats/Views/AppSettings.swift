@@ -49,6 +49,20 @@ class ApplicationSettings: NSStackView {
             userDefaults?.set(newValue, forKey: "systemWidgetsUpdates_state")
         }
     }
+
+    // MARK: - History (time-series store + Claude Code MCP query server)
+
+    private var historyRetentionDays: Int {
+        get { Store.shared.int(key: "history_retention_days", defaultValue: 7) }
+        set { Store.shared.set(key: "history_retention_days", value: newValue) }
+    }
+    private var queryServerEnabled: Bool {
+        get { Store.shared.bool(key: "history_query_enabled", defaultValue: true) }
+        set { Store.shared.set(key: "history_query_enabled", value: newValue) }
+    }
+    private var queryServerPort: Int {
+        Store.shared.int(key: "history_query_port", defaultValue: 9276)
+    }
     
     private var updateSelector: NSPopUpButton?
     private var startAtLoginBtn: NSSwitch?
@@ -115,6 +129,19 @@ class ApplicationSettings: NSStackView {
                 action: #selector(self.toggleSystemWidgetsUpdatesState),
                 state: self.systemWidgetsUpdatesState
             ))
+        ]))
+
+        scrollView.stackView.addArrangedSubview(PreferencesSection(title: localizedString("History"), [
+            PreferencesRow(localizedString("Retention period"), component: selectView(
+                action: #selector(self.toggleHistoryRetention),
+                items: HistoryRetentionOptions,
+                selected: "\(self.historyRetentionDays)"
+            )),
+            PreferencesRow(localizedString("Query server"), component: switchView(
+                action: #selector(self.toggleQueryServer),
+                state: self.queryServerEnabled
+            )),
+            PreferencesRow(localizedString("Query port"), component: textView("127.0.0.1:\(self.queryServerPort)"))
         ]))
         
         self.combinedModulesView = PreferencesSection([
@@ -507,6 +534,17 @@ class ApplicationSettings: NSStackView {
     
     @objc private func toggleSystemWidgetsUpdatesState(_ sender: NSButton) {
         self.systemWidgetsUpdatesState = sender.state == NSControl.StateValue.on
+    }
+
+    @objc private func toggleHistoryRetention(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let days = Int(key) else { return }
+        self.historyRetentionDays = days
+    }
+
+    @objc private func toggleQueryServer(_ sender: NSButton) {
+        let on = sender.state == NSControl.StateValue.on
+        self.queryServerEnabled = on
+        QueryServer.shared.enabled = on
     }
 }
 

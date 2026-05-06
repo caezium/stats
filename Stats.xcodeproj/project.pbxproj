@@ -55,6 +55,7 @@
 		5C4E8BBF2B6EEEE800F148B6 /* db.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C4E8BB02B6EEEE800F148B6 /* db.h */; };
 		5C4E8BC42B6EF65E00F148B6 /* libleveldb.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C4E8BC32B6EF65E00F148B6 /* libleveldb.a */; };
 		5C4E8BC72B6EF98800F148B6 /* DB.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C4E8BC62B6EF98800F148B6 /* DB.swift */; };
+		5CAA00012B6EFFFF00F148B6 /* QueryServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CAA00002B6EFFFF00F148B6 /* QueryServer.swift */; };
 		5C4E8BE92B71031A00F148B6 /* Kit.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C4E8BE82B7102A700F148B6 /* Kit.h */; settings = {ATTRIBUTES = (Private, ); }; };
 		5C50DB402FAF4CBE008BACB6 /* preview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C50DB3F2FAF4CBC008BACB6 /* preview.swift */; };
 		5C621D822B4770D6004ED7AF /* process.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C621D812B4770D6004ED7AF /* process.swift */; };
@@ -550,6 +551,7 @@
 		5C4E8BB02B6EEEE800F148B6 /* db.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = db.h; sourceTree = "<group>"; };
 		5C4E8BC32B6EF65E00F148B6 /* libleveldb.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libleveldb.a; sourceTree = "<group>"; };
 		5C4E8BC62B6EF98800F148B6 /* DB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DB.swift; sourceTree = "<group>"; };
+		5CAA00002B6EFFFF00F148B6 /* QueryServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryServer.swift; sourceTree = "<group>"; };
 		5C4E8BE82B7102A700F148B6 /* Kit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Kit.h; sourceTree = "<group>"; };
 		5C50DB3F2FAF4CBC008BACB6 /* preview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = preview.swift; sourceTree = "<group>"; };
 		5C621D812B4770D6004ED7AF /* process.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = process.swift; sourceTree = "<group>"; };
@@ -1224,6 +1226,7 @@
 				9A5A8446271895B700BC40A4 /* Reachability.swift */,
 				9A302613286A2A3B00B41D57 /* Repeater.swift */,
 				5C4E8BC62B6EF98800F148B6 /* DB.swift */,
+				5CAA00002B6EFFFF00F148B6 /* QueryServer.swift */,
 			);
 			path = plugins;
 			sourceTree = "<group>";
@@ -2132,6 +2135,7 @@
 				5CF2210D2B1E7EAF006C583F /* notifications.swift in Sources */,
 				9A6EEBBE2685259500897371 /* Logger.swift in Sources */,
 				5C4E8BC72B6EF98800F148B6 /* DB.swift in Sources */,
+				5CAA00012B6EFFFF00F148B6 /* QueryServer.swift in Sources */,
 				9A2847602666AA2700EC1F6D /* NetworkChart.swift in Sources */,
 				5C23BC0429A014AC00DBA990 /* portal.swift in Sources */,
 				9A2847792666AA5000EC1F6D /* module.swift in Sources */,

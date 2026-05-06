@@ -83,7 +83,7 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     private var alignWorkItem: DispatchWorkItem?
     private let alignQueue = DispatchQueue(label: "eu.exelban.readerAlignQueue")
     
-    public init(_ module: ModuleType, popup: Bool = false, preview: Bool = false, history: Bool = false, callback: @escaping (T?) -> Void = {_ in }) {
+    public init(_ module: ModuleType, popup: Bool = false, preview: Bool = false, history: Bool = true, callback: @escaping (T?) -> Void = {_ in }) {
         self.popup = popup
         self.preview = preview
         self.module = module
