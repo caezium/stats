@@ -34,17 +34,22 @@ private struct ioDevice {
 internal class DevicesReader: Reader<[BLEDevice]>, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var devices: [BLEDevice] = []
     private var devicesToRemove: [UUID] = []
-    private var manager: CBCentralManager!
-    
+    // Lazy: CBCentralManager() triggers a TCC permission check immediately,
+    // and an unsigned dev-build that hasn't been granted Bluetooth access
+    // gets SIGABRT'd on the spot. Deferring construction until the first
+    // read() means the manager is only created if the module is actually
+    // enabled and running. That also matches user intent — if they have
+    // Bluetooth_state=0 we should never ask for the permission.
+    private lazy var manager: CBCentralManager = CBCentralManager(delegate: self, queue: nil)
+
     private var characteristicsDict: [UUID: CBCharacteristic] = [:]
     private var bleLevels: [UUID: KeyValue_t] = [:]
-    
+
     static let batteryServiceUUID = CBUUID(string: "0x180F")
     static let batteryCharacteristicsUUID = CBUUID(string: "0x2A19")
-    
+
     init(callback: @escaping (T?) -> Void = {_ in }) {
         super.init(.bluetooth, callback: callback)
-        self.manager = CBCentralManager(delegate: self, queue: nil)
     }
     
     public override func read() {
