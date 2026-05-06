@@ -10,6 +10,7 @@
 //
 
 import Cocoa
+import SwiftUI
 import Kit
 
 public extension NSToolbarItem.Identifier {
@@ -28,6 +29,18 @@ class SettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     
     private var dashboard: NSView = Dashboard()
     private var settings: ApplicationSettings = ApplicationSettings()
+    private lazy var historyView: NSView = {
+        if #available(macOS 13.0, *) {
+            let host = NSHostingView(rootView: HistoryRootView())
+            host.translatesAutoresizingMaskIntoConstraints = false
+            return host
+        } else {
+            let label = NSTextField(labelWithString: "History view requires macOS 13 or newer")
+            label.alignment = .center
+            label.translatesAutoresizingMaskIntoConstraints = false
+            return label
+        }
+    }()
     
     private var toggleButton: NSControl? = nil
     private var activeModuleName: String? = nil
@@ -199,6 +212,11 @@ class SettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
                 self.toggleButton?.isHidden = true
                 self.settingsPreviewButton?.isHidden = true
                 NotificationCenter.default.post(name: .openWindow, object: nil, userInfo: ["state": false])
+            } else if title == "History" {
+                view = self.historyView
+                self.toggleButton?.isHidden = true
+                self.settingsPreviewButton?.isHidden = true
+                NotificationCenter.default.post(name: .openWindow, object: nil, userInfo: ["state": false])
             } else if title == "Settings" {
                 self.settings.viewWillAppear()
                 view = self.settings
@@ -306,6 +324,10 @@ private class SidebarView: NSStackView {
     }
     
     private var dashboardIcon: NSImage { NSImage(systemSymbolName: "circle.grid.3x3.fill", accessibilityDescription: nil)! }
+    private var historyIcon: NSImage {
+        NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
+            ?? iconFromSymbol(name: "clock", scale: .large)
+    }
     private var settingsIcon: NSImage { iconFromSymbol(name: "gear", scale: .large) }
     private var bugIcon: NSImage { iconFromSymbol(name: "ladybug", scale: .large) }
     private var supportIcon: NSImage { iconFromSymbol(name: "heart.fill", scale: .large) }
@@ -327,6 +349,7 @@ private class SidebarView: NSStackView {
         spacer.heightAnchor.constraint(equalToConstant: 10).isActive = true
         
         self.scrollView.stackView.addArrangedSubview(MenuItem(icon: self.dashboardIcon, title: "Dashboard"))
+        self.scrollView.stackView.addArrangedSubview(MenuItem(icon: self.historyIcon, title: "History"))
         self.scrollView.stackView.addArrangedSubview(spacer)
         
         self.supportPopover.behavior = .transient
@@ -378,10 +401,12 @@ private class SidebarView: NSStackView {
     }
     
     fileprivate func setModules(_ list: [Module]) {
+        // Sidebar layout above the spacer: Dashboard (0), History (1), spacer (2).
+        // Modules go after the spacer, so we insert at 3.
         list.reversed().forEach { (m: Module) in
             if !m.available { return }
             let menu: NSView = MenuItem(icon: m.config.icon, title: m.config.name)
-            self.scrollView.stackView.insertArrangedSubview(menu, at: 2)
+            self.scrollView.stackView.insertArrangedSubview(menu, at: 3)
         }
     }
     

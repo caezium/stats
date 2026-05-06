@@ -40,16 +40,17 @@ The architecture is:
 | `Stats/AppDelegate.swift` | Starts/stops `QueryServer` with the app lifecycle. |
 | `Stats/Views/AppSettings.swift` | New "History" section in Settings → retention period + query server toggle. |
 
-## History window
+## History view
 
-A native macOS window with charts, opened in two ways:
+A native SwiftUI + Charts surface, reachable three ways:
 
-- **Right-click any Stats menu bar icon** (CPU / RAM / Network / etc.) → choose **Open History…** (or `⌘Y` while the menu is open). The same right-click menu also has **Settings…** (`⌘,`) and **Quit Stats** (`⌘Q`).
-- **Settings → Application → History → "Open"**.
+- **Stats settings sidebar → History** — embedded in the existing settings window, second item under "Dashboard".
+- **Right-click any Stats menu bar icon** (CPU / RAM / Network / etc.) → choose **Open History…** (or `⌘Y` while the menu is open). Opens a dedicated window. Same right-click menu also has **Settings…** (`⌘,`) and **Quit Stats** (`⌘Q`).
+- **Settings → Application → History → "Open"** — also opens the dedicated window.
 
 Six chart cards (CPU usage, RAM used, network throughput with ↓/↑ split, battery level, CPU temperature, CPU frequency) plus three top-process tables (CPU peak %, RAM peak bytes, Network delta bytes ↓/↑ rolled up by app name across pids). Time-range picker — 5m / 1h / 6h / 24h / 7d. Auto-refreshes every 5 seconds.
 
-Built with SwiftUI + Apple's Charts framework. Reads `DB.shared.findTimeSeries(...)` directly in-process — no HTTP, no extra processes, works the moment Stats is running. Requires macOS 13 or newer (older systems get a stub).
+Reads `DB.shared.findTimeSeries(...)` directly in-process — no HTTP, no extra processes, works the moment Stats is running. Requires macOS 13 or newer (older systems get a stub).
 
 ## QueryServer endpoints
 
