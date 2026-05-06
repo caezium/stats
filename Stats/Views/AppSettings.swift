@@ -141,7 +141,11 @@ class ApplicationSettings: NSStackView {
                 action: #selector(self.toggleQueryServer),
                 state: self.queryServerEnabled
             )),
-            PreferencesRow(localizedString("Query port"), component: textView("127.0.0.1:\(self.queryServerPort)"))
+            PreferencesRow(localizedString("Query port"), component: textView("127.0.0.1:\(self.queryServerPort)")),
+            PreferencesRow(localizedString("Dashboard"), component: buttonView(
+                #selector(self.openDashboard),
+                text: localizedString("Open in browser")
+            ))
         ]))
         
         self.combinedModulesView = PreferencesSection([
@@ -545,6 +549,12 @@ class ApplicationSettings: NSStackView {
         let on = sender.state == NSControl.StateValue.on
         self.queryServerEnabled = on
         QueryServer.shared.enabled = on
+    }
+
+    @objc private func openDashboard(_ sender: NSButton) {
+        if let url = URL(string: "http://127.0.0.1:\(self.queryServerPort)/") {
+            NSWorkspace.shared.open(url)
+        }
     }
 }
 

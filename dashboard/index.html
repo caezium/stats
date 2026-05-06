@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stats — History</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text: #1a1a1f;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #007aff;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0d0f;
+      --card: #18181c;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --border: #2a2a30;
+      --accent: #0a84ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 1;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  header h1 {
+    font-size: 16px; font-weight: 600; margin: 0;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--good) 60%, transparent);
+  }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 8px color-mix(in srgb, var(--bad) 60%, transparent); }
+  .controls { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .controls > * {
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    border-radius: 7px; padding: 6px 10px; font: inherit; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .controls > *:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+  .controls .seg {
+    display: inline-flex; padding: 2px;
+  }
+  .controls .seg button {
+    background: transparent; border: 0; color: var(--muted); padding: 4px 10px;
+    border-radius: 5px; cursor: pointer; font: inherit;
+  }
+  .controls .seg button.active {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent); font-weight: 500;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .meta { color: var(--muted); font-size: 12px; }
+  main { padding: 20px 24px 60px; max-width: 1400px; margin: 0 auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px 18px;
+  }
+  .card h2 {
+    font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 4px;
+  }
+  .card .latest {
+    font-size: 22px; font-weight: 600; margin: 0 0 12px; letter-spacing: -0.01em;
+  }
+  .card .latest small { color: var(--muted); font-size: 13px; font-weight: 500; margin-left: 6px; }
+  .chart-wrap { position: relative; height: 160px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
+  .row:first-child { border-top: 0; }
+  .row .name { font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .val { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .processes { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
+  .empty { color: var(--muted); padding: 12px 0; text-align: center; font-size: 13px; }
+  .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot" id="dot"></span> Stats — History</h1>
+  <span class="meta" id="meta"></span>
+  <div class="controls">
+    <div class="seg" id="rangeSeg">
+      <button data-min="5">5m</button>
+      <button data-min="60" class="active">1h</button>
+      <button data-min="360">6h</button>
+      <button data-min="1440">24h</button>
+      <button data-min="10080">7d</button>
+    </div>
+    <label><input type="checkbox" id="auto" checked> auto</label>
+    <button id="refresh" title="Refresh now">↻</button>
+  </div>
+</header>
+<main>
+  <div class="grid">
+    <div class="card">
+      <h2>CPU usage</h2>
+      <p class="latest" id="cpu-latest">—</p>
+      <div class="chart-wrap"><canvas id="cpu"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>RAM used</h2>
+      <p class="latest" id="ram-latest">—</p>
+      <div class="chart-wrap"><canvas id="ram"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Network throughput</h2>
+      <p class="latest" id="net-latest">—</p>
+      <div class="chart-wrap"><canvas id="net"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Battery level</h2>
+      <p class="latest" id="bat-latest">—</p>
+      <div class="chart-wrap"><canvas id="bat"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>CPU temperature</h2>
+      <p class="latest" id="tmp-latest">—</p>
+      <div class="chart-wrap"><canvas id="tmp"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>CPU frequency</h2>
+      <p class="latest" id="frq-latest">—</p>
+      <div class="chart-wrap"><canvas id="frq"></canvas></div>
+    </div>
+  </div>
+  <div class="processes">
+    <div class="card">
+      <h2>Top processes — CPU</h2>
+      <p class="meta" id="top-cpu-meta">peak % over window</p>
+      <div id="top-cpu"></div>
+    </div>
+    <div class="card">
+      <h2>Top processes — RAM</h2>
+      <p class="meta" id="top-ram-meta">peak bytes over window</p>
+      <div id="top-ram"></div>
+    </div>
+    <div class="card">
+      <h2>Top processes — Network</h2>
+      <p class="meta" id="top-net-meta">delta bytes over window</p>
+      <div id="top-net"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const TS = ts => new Date(ts * 1000);
+
+const fmtBytes = n => {
+  if (n == null || !isFinite(n)) return "—";
+  if (n < 1024) return n.toFixed(0) + " B";
+  if (n < 1024**2) return (n/1024).toFixed(1) + " KB";
+  if (n < 1024**3) return (n/1024**2).toFixed(1) + " MB";
+  return (n/1024**3).toFixed(2) + " GB";
+};
+const fmtPct = n => n == null ? "—" : (n*100).toFixed(1) + "%";
+const fmtPctRaw = n => n == null ? "—" : n.toFixed(1) + "%";
+const fmtNum = (n, unit) => n == null ? "—" : n.toFixed(1) + (unit||"");
+
+let rangeMinutes = 60;
+let autoRefresh = true;
+let refreshTimer = null;
+let inFlight = false;
+const REFRESH_MS = 5000;
+
+const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#007aff';
+const colors = {
+  cpu: '#3b82f6', ram: '#22c55e', net: '#f59e0b',
+  bat: '#a855f7', tmp: '#ef4444', frq: '#06b6d4',
+};
+
+function makeChart(canvas, color, yFormatter) {
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height || 160);
+  grad.addColorStop(0, color + '55');
+  grad.addColorStop(1, color + '05');
+  return new Chart(ctx, {
+    type: 'line',
+    data: { datasets: [{
+      data: [],
+      borderColor: color,
+      backgroundColor: grad,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHoverBackgroundColor: color,
+      tension: 0.25,
+      fill: true,
+    }]},
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+      scales: {
+        x: { type: 'time', ticks: { maxTicksLimit: 6, color: '#9ca3af', font: { size: 11 } }, grid: { display: false } },
+        y: { ticks: { color: '#9ca3af', font: { size: 11 }, callback: yFormatter, maxTicksLimit: 5 }, grid: { color: 'rgba(127,127,127,0.12)' } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(0,0,0,0.85)',
+          callbacks: { label: c => yFormatter ? yFormatter(c.parsed.y) : c.parsed.y }
+        }
+      }
+    }
+  });
+}
+
+const charts = {};
+function initCharts() {
+  charts.cpu = makeChart($('cpu'), colors.cpu, v => v.toFixed(0) + '%');
+  charts.ram = makeChart($('ram'), colors.ram, v => (v/1024**3).toFixed(1) + ' GB');
+  charts.net = makeChart($('net'), colors.net, v => v < 1024 ? v.toFixed(0)+' B/s' : v < 1024**2 ? (v/1024).toFixed(0)+' KB/s' : (v/1024**2).toFixed(1)+' MB/s');
+  charts.bat = makeChart($('bat'), colors.bat, v => v.toFixed(0) + '%');
+  charts.tmp = makeChart($('tmp'), colors.tmp, v => v.toFixed(0) + '°C');
+  charts.frq = makeChart($('frq'), colors.frq, v => (v/1000).toFixed(1) + ' GHz');
+}
+
+async function fetchSeries(prefix, minutes, bucket) {
+  const since = Math.floor(Date.now()/1000) - minutes*60;
+  const params = new URLSearchParams({ prefix, since: String(since) });
+  if (bucket) params.set('bucket', String(bucket));
+  const r = await fetch('/metrics?' + params);
+  if (!r.ok) throw new Error(prefix + ' ' + r.status);
+  return r.json();
+}
+
+function setSeries(chart, points, valueFn) {
+  const data = [];
+  for (const p of points) {
+    const y = valueFn(p.value);
+    if (y == null || !isFinite(y)) continue;
+    data.push({ x: p.ts * 1000, y });
+  }
+  chart.data.datasets[0].data = data;
+  chart.update('none');
+}
+
+function pickBucket(minutes) {
+  // Aim for ~200–500 points on screen.
+  if (minutes <= 10) return 0;        // raw
+  if (minutes <= 60) return 0;
+  if (minutes <= 360) return 30;      // 6h → 30s buckets
+  if (minutes <= 1440) return 120;    // 24h → 2min buckets
+  return 600;                          // 7d → 10min buckets
+}
+
+function setLatest(id, html) { const el = $(id); if (el) el.innerHTML = html; }
+
+function rateFromCumulative(points, field) {
+  // Convert a series of cumulative byte counters to per-second rates.
+  // Resets (counter goes down) become 0.
+  const out = [];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i-1], b = points[i];
+    const dt = b.ts - a.ts;
+    if (dt <= 0) continue;
+    const av = a.value?.[field], bv = b.value?.[field];
+    if (typeof av !== 'number' || typeof bv !== 'number') continue;
+    const delta = bv - av;
+    const rate = delta < 0 ? 0 : delta / dt;
+    out.push({ ts: b.ts, value: rate });
+  }
+  return out;
+}
+
+function rollupProcessSamples(samples, valueFn, n = 10) {
+  // samples: [{ ts, value: [{name, pid, ...}] }, ...]
+  const peaks = new Map();
+  for (const sample of samples) {
+    const arr = sample.value;
+    if (!Array.isArray(arr)) continue;
+    for (const entry of arr) {
+      const name = entry.name || '<unknown>';
+      const v = valueFn(entry);
+      if (typeof v !== 'number' || !isFinite(v)) continue;
+      const cur = peaks.get(name);
+      if (cur == null || v > cur) peaks.set(name, v);
+    }
+  }
+  return Array.from(peaks, ([name, v]) => ({ name, v }))
+    .sort((a, b) => b.v - a.v)
+    .slice(0, n);
+}
+
+function netDeltaPerProcess(samples, n = 10) {
+  // For Network@ProcessReader: download/upload are cumulative bytes per pid.
+  // Use first vs last seen per pid+name; aggregate by name.
+  const firstByKey = new Map(), lastByKey = new Map();
+  for (const sample of samples) {
+    const arr = sample.value;
+    if (!Array.isArray(arr)) continue;
+    for (const e of arr) {
+      const key = (e.pid || 0) + '|' + (e.name || '');
+      if (!firstByKey.has(key)) firstByKey.set(key, e);
+      lastByKey.set(key, e);
+    }
+  }
+  const byName = new Map();
+  for (const key of lastByKey.keys()) {
+    const a = firstByKey.get(key), b = lastByKey.get(key);
+    const dl = Math.max(0, (b.download||0) - (a.download||0));
+    const ul = Math.max(0, (b.upload||0)   - (a.upload||0));
+    const name = b.name || '<unknown>';
+    const cur = byName.get(name) || { download: 0, upload: 0 };
+    cur.download += dl; cur.upload += ul;
+    byName.set(name, cur);
+  }
+  return Array.from(byName, ([name, v]) => ({ name, ...v }))
+    .sort((a, b) => (b.download + b.upload) - (a.download + a.upload))
+    .slice(0, n);
+}
+
+function renderRows(containerId, rows, formatter) {
+  const el = $(containerId);
+  if (!rows || rows.length === 0) {
+    el.innerHTML = '<p class="empty">no samples in window</p>';
+    return;
+  }
+  el.innerHTML = rows.map(r =>
+    `<div class="row"><span class="name" title="${r.name}">${r.name}</span><span class="val">${formatter(r)}</span></div>`
+  ).join('');
+}
+
+async function refresh() {
+  if (inFlight) return;
+  inFlight = true;
+  const dot = $('dot');
+  try {
+    const minutes = rangeMinutes;
+    const bucket = pickBucket(minutes);
+
+    // Fetch in parallel.
+    const [cpu, ram, netUsage, bat, tmp, frq, cpuProc, ramProc, netProc, info] = await Promise.all([
+      fetchSeries('CPU@LoadReader', minutes, bucket),
+      fetchSeries('RAM@UsageReader', minutes, bucket),
+      fetchSeries('Network@UsageReader', minutes, 0),
+      fetchSeries('Battery@UsageReader', minutes, bucket),
+      fetchSeries('CPU@TemperatureReader', minutes, bucket),
+      fetchSeries('CPU@FrequencyReader', minutes, bucket),
+      fetchSeries('CPU@ProcessReader', minutes, 0),
+      fetchSeries('RAM@ProcessReader', minutes, 0),
+      fetchSeries('Network@ProcessReader', minutes, 0),
+      fetch('/info').then(r => r.json()),
+    ]);
+
+    setSeries(charts.cpu, cpu, v => v?.totalUsage != null ? v.totalUsage*100 : null);
+    setSeries(charts.ram, ram, v => v?.used);
+    setSeries(charts.bat, bat, v => v?.level != null ? v.level*100 : null);
+    setSeries(charts.tmp, tmp, v => typeof v === 'number' ? v : v?.value);
+    setSeries(charts.frq, frq, v => v?.value);
+
+    // Network throughput: Stats already exposes bandwidth.{download,upload}
+    // as instantaneous bytes-per-sample. Sum them for total throughput.
+    // Fall back to a derivative of total.{download,upload} cumulative bytes
+    // if bandwidth fields aren't present.
+    let rates = [];
+    if (netUsage.length && netUsage[0].value?.bandwidth) {
+      rates = netUsage.map(p => ({
+        ts: p.ts,
+        value: (p.value?.bandwidth?.download || 0) + (p.value?.bandwidth?.upload || 0)
+      }));
+    } else {
+      const cum = netUsage.map(p => ({
+        ts: p.ts,
+        value: { total: (p.value?.total?.download || 0) + (p.value?.total?.upload || 0) }
+      }));
+      rates = rateFromCumulative(cum, 'total');
+    }
+    charts.net.data.datasets[0].data = rates.map(p => ({ x: p.ts*1000, y: p.value }));
+    charts.net.update('none');
+
+    // Latest values.
+    const cpuLast = cpu[cpu.length - 1]?.value;
+    if (cpuLast) setLatest('cpu-latest', `${(cpuLast.totalUsage*100).toFixed(1)}<small>% total · idle ${(cpuLast.idleLoad*100).toFixed(0)}%</small>`);
+
+    const ramLast = ram[ram.length - 1]?.value;
+    if (ramLast) {
+      const total = ramLast.total || 0;
+      const used = ramLast.used || 0;
+      const pressure = ramLast.pressure?.value;
+      setLatest('ram-latest', `${(used/1024**3).toFixed(1)}<small>GB / ${(total/1024**3).toFixed(0)}GB · ${pressure || '—'}</small>`);
+    }
+
+    const batLast = bat[bat.length - 1]?.value;
+    if (batLast) {
+      const charging = batLast.isCharging ? '⚡' : '';
+      const tte = batLast.timeToEmpty;
+      setLatest('bat-latest', `${(batLast.level*100).toFixed(0)}<small>% ${charging} · health ${batLast.health}% · ${tte > 0 ? Math.floor(tte/60)+'h '+(tte%60)+'m left' : '—'}</small>`);
+    }
+
+    const tmpLast = tmp[tmp.length - 1]?.value;
+    if (tmpLast != null) {
+      const v = typeof tmpLast === 'number' ? tmpLast : tmpLast.value;
+      setLatest('tmp-latest', `${v.toFixed(1)}<small>°C</small>`);
+    }
+
+    const frqLast = frq[frq.length - 1]?.value;
+    if (frqLast?.value) setLatest('frq-latest', `${(frqLast.value/1000).toFixed(2)}<small>GHz · P ${(frqLast.pCore/1000).toFixed(2)} · E ${(frqLast.eCore/1000).toFixed(2)}</small>`);
+
+    const netLast = netUsage[netUsage.length - 1]?.value;
+    if (netLast) {
+      const dl = netLast.bandwidth?.download || 0;
+      const ul = netLast.bandwidth?.upload || 0;
+      setLatest('net-latest', `${fmtBytes(dl + ul)}<small>/s · ↓${fmtBytes(dl)}/s ↑${fmtBytes(ul)}/s</small>`);
+    }
+
+    // Top processes.
+    const topCpu = rollupProcessSamples(cpuProc, e => e.usage, 10);
+    renderRows('top-cpu', topCpu, r => r.v.toFixed(1) + ' %');
+
+    const topRam = rollupProcessSamples(ramProc, e => e.usage, 10);
+    renderRows('top-ram', topRam, r => fmtBytes(r.v));
+
+    const topNet = netDeltaPerProcess(netProc, 10);
+    renderRows('top-net', topNet, r => `↓${fmtBytes(r.download)} ↑${fmtBytes(r.upload)}`);
+
+    // Status meta line.
+    const retain = info.retention_days;
+    const seriesCount = info.prefixes?.length ?? 0;
+    $('meta').textContent = `${seriesCount} streams · ${retain}d retention · ${minutes < 60 ? minutes+'min' : (minutes/60)+'h'} window`;
+    dot.classList.remove('bad');
+  } catch (e) {
+    dot.classList.add('bad');
+    $('meta').innerHTML = `<span class="err">${e.message}</span> · is Stats running?`;
+  } finally {
+    inFlight = false;
+  }
+}
+
+function setupControls() {
+  // Range buttons.
+  $('rangeSeg').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-min]');
+    if (!btn) return;
+    rangeMinutes = parseInt(btn.dataset.min);
+    [...$('rangeSeg').children].forEach(c => c.classList.toggle('active', c === btn));
+    refresh();
+  });
+  $('refresh').addEventListener('click', refresh);
+  $('auto').addEventListener('change', e => {
+    autoRefresh = e.target.checked;
+    if (autoRefresh) startTimer(); else stopTimer();
+  });
+}
+
+function startTimer() {
+  stopTimer();
+  refreshTimer = setInterval(refresh, REFRESH_MS);
+}
+function stopTimer() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = null;
+}
+
+initCharts();
+setupControls();
+refresh();
+startTimer();
+</script>
+</body>
+</html>

@@ -40,6 +40,19 @@ The architecture is:
 | `Stats/AppDelegate.swift` | Starts/stops `QueryServer` with the app lifecycle. |
 | `Stats/Views/AppSettings.swift` | New "History" section in Settings → retention period + query server toggle. |
 
+## Dashboard
+
+There's a built-in browser dashboard at **http://127.0.0.1:9276/** — open it from **Settings → Application → History → "Open in browser"** (or just navigate to that URL in any browser).
+
+What's on the page:
+- Six aggregate line charts: CPU usage, RAM used, network throughput, battery level, CPU temperature, CPU frequency.
+- Time-range scrubber: 5m / 1h / 6h / 24h / 7d. Longer ranges automatically downsample server-side via the `bucket` query param.
+- Top-process tables for CPU (peak %), RAM (peak bytes), Network (delta bytes ↓↑) over the selected window — rolled up by app name across all pids.
+- Auto-refresh every 5 seconds; toggle off via the "auto" checkbox.
+- Loopback only — same security model as the rest of the QueryServer.
+
+The HTML lives at `dashboard/index.html` in the repo. The QueryServer reads it at request time from a few candidate paths (bundle Resources, `~/Desktop/stats/dashboard/`, `~/Library/Application Support/Stats/dashboard.html`), so you can iterate on the dashboard without rebuilding the app.
+
 ## QueryServer endpoints
 
 All bound to `127.0.0.1:9276` (configurable via `history_query_port` default).
