@@ -137,6 +137,25 @@ using namespace std;
     return dict;
 }
 
+-(NSDictionary *)findKeysAndValuesInRange:(NSString *)startKey end:(NSString *)endKey {
+    leveldb::ReadOptions readOptions;
+    leveldb::Iterator *it = db->NewIterator(readOptions);
+    leveldb::Slice startSlice = leveldb::Slice(startKey.UTF8String);
+    std::string endStr = std::string(endKey.UTF8String);
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
+
+    for (it->Seek(startSlice); it->Valid() && it->key().ToString() < endStr; it->Next()) {
+        NSString *k = [[NSString alloc] initWithCString:it->key().ToString().c_str() encoding:NSUTF8StringEncoding];
+        NSString *v = [[NSString alloc] initWithCString:it->value().ToString().c_str() encoding:NSUTF8StringEncoding];
+        if (k != nil && v != nil) {
+            dict[k] = v;
+        }
+    }
+    delete it;
+
+    return dict;
+}
+
 -(bool)deleteOne:(NSString *)key {
     ostringstream keySream;
     keySream << key.UTF8String;
@@ -149,13 +168,30 @@ using namespace std;
 
 -(bool)deleteMany:(NSArray*)keys {
     leveldb::WriteBatch batch;
-    
+
     for (int i=0; i <[keys count]; i++) {
         NSString *key = [keys objectAtIndex:i];
         leveldb::Slice slice = leveldb::Slice(key.UTF8String);
         batch.Delete(slice);
     }
-    
+
+    leveldb::Status s = self->db->Write(leveldb::WriteOptions(), &batch);
+    return s.ok();
+}
+
+-(bool)compactRollup:(NSString *)targetKey value:(NSString *)targetValue removing:(NSArray *)oldKeys {
+    leveldb::WriteBatch batch;
+
+    batch.Put(leveldb::Slice(targetKey.UTF8String), leveldb::Slice(targetValue.UTF8String));
+
+    for (int i=0; i < [oldKeys count]; i++) {
+        NSString *k = [oldKeys objectAtIndex:i];
+        // Skip the target key if it appears in the deletion list — within a single
+        // WriteBatch the Delete would land after the Put and erase the merged value.
+        if ([k isEqualToString:targetKey]) { continue; }
+        batch.Delete(leveldb::Slice(k.UTF8String));
+    }
+
     leveldb::Status s = self->db->Write(leveldb::WriteOptions(), &batch);
     return s.ok();
 }

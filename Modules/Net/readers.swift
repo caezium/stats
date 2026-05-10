@@ -244,14 +244,21 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
         
         self.usage.total.upload += self.usage.bandwidth.upload
         self.usage.total.download += self.usage.bandwidth.download
-        
+
+        // Persist per-sample bandwidth delta to lldb history (skip zero samples,
+        // including the very first read where the delta is undefined). Matches
+        // the netmon importer's `Net@UsageReader@<ts>` schema.
+        if self.usage.bandwidth.upload > 0 || self.usage.bandwidth.download > 0 {
+            DB.shared.insert(key: "Network@UsageReader", value: self.usage.bandwidth, ts: true)
+        }
+
         self.usage.status = self.reachability.isReachable
-        
+
         if self.vpnConnection && self.VPNMode {
             self.usage.bandwidth.upload /= 2
             self.usage.bandwidth.download /= 2
         }
-        
+
         self.callback(self.usage)
         
         self.usage.bandwidth.upload = current.upload
@@ -746,7 +753,7 @@ public class ProcessReader: Reader<[Network_Process]> {
             let secondMax = max($1.download, $1.upload)
             let firstMin = min($0.download, $0.upload)
             let secondMin = min($1.download, $1.upload)
-            
+
             if firstMax == secondMax && firstMin == secondMin { // download and upload values are the same, sort by time
                 return $0.time < $1.time
             } else if firstMax == secondMax && firstMin != secondMin { // max values are the same, min not. Sort by min values
@@ -754,7 +761,25 @@ public class ProcessReader: Reader<[Network_Process]> {
             }
             return firstMax < secondMax // max values are not the same, sort by max value
         }
-        
+
+        // Persist per-app bandwidth deltas to lldb history. Snapshot every process
+        // with non-zero bytes (not just the top-N shown in the popup). Matches the
+        // netmon importer's `Net@ProcessReader@<ts>` schema:
+        //   {"<appName>": {"upload": N, "download": N}, ...}
+        var snapshot: [String: Bandwidth] = [:]
+        for p in processes where p.upload > 0 || p.download > 0 {
+            if var existing = snapshot[p.name] {
+                existing.upload += Int64(p.upload)
+                existing.download += Int64(p.download)
+                snapshot[p.name] = existing
+            } else {
+                snapshot[p.name] = Bandwidth(upload: Int64(p.upload), download: Int64(p.download))
+            }
+        }
+        if !snapshot.isEmpty {
+            DB.shared.insert(key: "Network@ProcessReader", value: snapshot, ts: true)
+        }
+
         self.callback(processes.suffix(self.numberOfProcesses).reversed())
     }
 }

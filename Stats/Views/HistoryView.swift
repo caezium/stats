@@ -60,6 +60,14 @@ private struct NetUsageMirror: Codable {
     let bandwidth: Bandwidth?
 }
 
+// Some Network@UsageReader rows are written in a flat shape (`{"upload":N,"download":N}`)
+// instead of the live readers' nested `{"bandwidth":{...}}` shape — for example,
+// rows imported from an external history source. This mirror decodes the flat case.
+private struct NetUsageFlatMirror: Codable {
+    let download: Int?
+    let upload: Int?
+}
+
 private struct FreqMirror: Codable {
     let value: Double?
     let pCore: Double?
@@ -162,11 +170,22 @@ private enum HistoryLoader {
         let netRaw = DB.shared.findTimeSeries(prefix: "Network@UsageReader", since: since)
         var dn: [ChartPoint] = []; var up: [ChartPoint] = []
         for entry in netRaw {
-            guard let data = entry.json.data(using: .utf8),
-                  let v = try? JSONDecoder().decode(NetUsageMirror.self, from: data) else { continue }
+            guard let data = entry.json.data(using: .utf8) else { continue }
+            let dnVal: Int
+            let upVal: Int
+            if let v = try? JSONDecoder().decode(NetUsageMirror.self, from: data),
+               let bw = v.bandwidth {
+                dnVal = bw.download ?? 0
+                upVal = bw.upload ?? 0
+            } else if let flat = try? JSONDecoder().decode(NetUsageFlatMirror.self, from: data) {
+                dnVal = flat.download ?? 0
+                upVal = flat.upload ?? 0
+            } else {
+                continue
+            }
             let t = Date(timeIntervalSince1970: TimeInterval(entry.ts))
-            dn.append(.init(time: t, value: Double(v.bandwidth?.download ?? 0)))
-            up.append(.init(time: t, value: Double(v.bandwidth?.upload ?? 0)))
+            dn.append(.init(time: t, value: Double(dnVal)))
+            up.append(.init(time: t, value: Double(upVal)))
         }
         snap.netDown = dn; snap.netUp = up
 
@@ -236,22 +255,40 @@ private enum HistoryLoader {
 
     private static func topNetByDelta(since: Int, n: Int) -> [ProcessRow] {
         let raw = DB.shared.findTimeSeries(prefix: "Network@ProcessReader", since: since)
-        // first/last by (pid|name), then aggregate by name.
+        struct Agg { var dn: Double = 0; var up: Double = 0 }
+        var byName: [String: Agg] = [:]
+
+        // Two value shapes coexist under this prefix:
+        //  1. Live writes from ProcessReader's auto-persist:
+        //       [{"name":..., "pid":..., "download":N, "upload":N}, ...]
+        //     These are cumulative-since-process-start, so we compute first/last
+        //     deltas per (pid, name).
+        //  2. Imported / aggregated rows: per-bucket totals already, shape is
+        //       {"<name>": {"download":N, "upload":N}, ...}
+        //     Each row is its own delta, so we just sum across rows.
         struct Key: Hashable { let pid: Int; let name: String }
         var first: [Key: NetProcMirror] = [:]
         var last:  [Key: NetProcMirror] = [:]
+
         for entry in raw {
-            guard let data = entry.json.data(using: .utf8),
-                  let arr = try? JSONDecoder().decode([NetProcMirror].self, from: data) else { continue }
-            for p in arr {
-                guard let name = p.name, let pid = p.pid else { continue }
-                let k = Key(pid: pid, name: name)
-                if first[k] == nil { first[k] = p }
-                last[k] = p
+            guard let data = entry.json.data(using: .utf8) else { continue }
+            if let arr = try? JSONDecoder().decode([NetProcMirror].self, from: data) {
+                for p in arr {
+                    guard let name = p.name, let pid = p.pid else { continue }
+                    let k = Key(pid: pid, name: name)
+                    if first[k] == nil { first[k] = p }
+                    last[k] = p
+                }
+            } else if let dict = try? JSONDecoder().decode([String: NetProcMirror].self, from: data) {
+                for (name, p) in dict {
+                    var cur = byName[name] ?? Agg()
+                    cur.dn += Double(p.download ?? 0)
+                    cur.up += Double(p.upload ?? 0)
+                    byName[name] = cur
+                }
             }
         }
-        struct Agg { var dn: Double = 0; var up: Double = 0 }
-        var byName: [String: Agg] = [:]
+
         for (k, b) in last {
             let a = first[k] ?? b
             let dn = max(0, Double((b.download ?? 0) - (a.download ?? 0)))

@@ -107,9 +107,34 @@ public class DB {
 
     /// Returns `(timestamp, raw JSON)` tuples for keys matching `<prefix>@<unix_seconds>`.
     /// `prefix` is normally `<module>@<reader>` (no trailing `@`).
+    ///
+    /// When `since`/`until` are provided, this uses a leveldb range scan bounded by
+    /// `<prefix>@<since>` .. `<prefix>@<until>` so the cost is proportional to the
+    /// returned window rather than the full prefix. This matters for high-volume
+    /// time series like `Net@UsageReader` (millions of rows) — without the bound a
+    /// "last hour" query would have to materialize and discard the entire history.
+    /// Tier-mixed keys (1s / 1m / 1h all under the same prefix) are returned together;
+    /// callers tell tiers apart by inspecting `ts` (e.g. ts % 3600 == 0).
     public func findTimeSeries(prefix: String, since: Int? = nil, until: Int? = nil) -> [(ts: Int, json: String)] {
         let normalised = prefix.hasSuffix("@") ? prefix : "\(prefix)@"
-        guard let dict = self.lldb?.findKeysAndValues(normalised) as? [String: String] else { return [] }
+
+        let dict: [String: String]
+        if since != nil || until != nil {
+            // Unix seconds are all 10 digits in this era (978307200 through 9999999999,
+            // covering 2001..2286), so plain decimal stringification preserves
+            // lexicographic == numeric ordering for the range scan.
+            let lo = since ?? 0
+            let startKey = "\(normalised)\(lo)"
+            let endKey: String
+            if let until = until {
+                endKey = "\(normalised)\(until + 1)"  // exclusive — bump by 1 to include `until`
+            } else {
+                endKey = "\(normalised)\u{FFFF}"      // sentinel above any digit
+            }
+            dict = (self.lldb?.findKeysAndValues(inRange: startKey, end: endKey) as? [String: String]) ?? [:]
+        } else {
+            dict = (self.lldb?.findKeysAndValues(normalised) as? [String: String]) ?? [:]
+        }
 
         var out: [(ts: Int, json: String)] = []
         out.reserveCapacity(dict.count)
@@ -155,12 +180,31 @@ public class DB {
 
     // MARK: - Cleanup
 
+    // Prefixes that opt out of the global TTL prune because they have tier-aware
+    // retention via `compactNetTiers()` (1s -> 1m -> 1h rollup, never deleted).
+    // Stored WITHOUT trailing `@` so both call sites (pruneExpired sees full keys
+    // like "Net@UsageReader@1234"; cleanPrefix gets the bare top-level
+    // "Net@UsageReader") can match correctly.
+    private static let tieredRetentionTopLevels: [String] = [
+        "Network@UsageReader",
+        "Network@ProcessReader"
+    ]
+
+    fileprivate static func isTieredFullKey(_ key: String) -> Bool {
+        tieredRetentionTopLevels.contains(where: { key.hasPrefix("\($0)@") })
+    }
+    fileprivate static func isTieredTopLevel(_ topLevel: String) -> Bool {
+        tieredRetentionTopLevels.contains(topLevel)
+    }
+
     /// Walk the entire store and delete timestamped rows older than the current TTL.
+    /// Keys covered by tier-aware retention (see `compactNetTiers`) are skipped.
     public func pruneExpired() {
         guard let allKeys = self.lldb?.keys("") as? [String] else { return }
         let cutoff = Date().currentTimeSeconds() - self.ttl
         var toDelete: [String] = []
         for key in allKeys {
+            if Self.isTieredFullKey(key) { continue }
             let parts = key.split(separator: "@")
             guard parts.count >= 3 else { continue }
             guard let tail = parts.last, let ts = Int(tail), ts < cutoff else { continue }
@@ -171,8 +215,111 @@ public class DB {
         }
     }
 
+    // MARK: - Tier-aware retention for Net@UsageReader / Net@ProcessReader
+    //
+    // History storage policy for net traffic:
+    //   * within 30 days  -> 1-second rows kept verbatim
+    //   * 30 ..  60 days  -> 1-minute rows (sources rolled up + deleted)
+    //   * older than 60d  -> 1-hour rows, local-time aligned (sources rolled up + deleted)
+    //
+    // Each rollup uses `LLDB.compactRollup` so the merged target write and the source
+    // deletes commit atomically — a crash mid-compaction never doubles or loses data.
+
+    fileprivate struct NetPair: Codable {
+        var upload: Int64 = 0
+        var download: Int64 = 0
+        static func +(a: NetPair, b: NetPair) -> NetPair {
+            NetPair(upload: a.upload + b.upload, download: a.download + b.download)
+        }
+    }
+
+    /// Returns the bucket-aligned timestamp for `ts` under the tier policy, or nil
+    /// if the row is recent enough that no rollup is required yet.
+    private func tierBucket(for ts: Int, now: Int) -> Int? {
+        let t30 = now - 30 * 24 * 60 * 60
+        let t60 = now - 60 * 24 * 60 * 60
+        if ts >= t30 { return nil }                    // within 30d, no rollup
+        if ts >= t60 { return ts - (ts % 60) }         // minute bucket
+        // hourly bucket aligned to the user's local clock
+        let cal = Calendar.current
+        let date = Date(timeIntervalSince1970: TimeInterval(ts))
+        let comps = cal.dateComponents([.year, .month, .day, .hour], from: date)
+        return cal.date(from: comps).map { Int($0.timeIntervalSince1970) }
+    }
+
+    public func compactNetTiers() {
+        let now = Date().currentTimeSeconds()
+        compactSinglePair(prefix: "Network@UsageReader", now: now)
+        compactDictPair(prefix: "Network@ProcessReader", now: now)
+    }
+
+    private func groupByTargetBucket(prefix: String, now: Int) -> [Int: [String]] {
+        guard let allKeys = self.lldb?.keys("\(prefix)@") as? [String] else { return [:] }
+        var groups: [Int: [String]] = [:]
+        for key in allKeys {
+            let parts = key.split(separator: "@")
+            guard parts.count >= 3, let tail = parts.last, let ts = Int(tail) else { continue }
+            guard let target = self.tierBucket(for: ts, now: now), target != ts else { continue }
+            groups[target, default: []].append(key)
+        }
+        return groups
+    }
+
+    private func compactSinglePair(prefix: String, now: Int) {
+        let groups = self.groupByTargetBucket(prefix: prefix, now: now)
+        let decoder = JSONDecoder()
+        let encoder = JSONEncoder()
+        for (targetTS, sourceKeys) in groups {
+            var merged = NetPair()
+            let targetKey = "\(prefix)@\(targetTS)"
+            if let existing = self.lldb?.findOne(targetKey), !existing.isEmpty,
+               let data = existing.data(using: .utf8),
+               let prev = try? decoder.decode(NetPair.self, from: data) {
+                merged = merged + prev
+            }
+            for sk in sourceKeys {
+                guard let raw = self.lldb?.findOne(sk), !raw.isEmpty,
+                      let data = raw.data(using: .utf8),
+                      let p = try? decoder.decode(NetPair.self, from: data) else { continue }
+                merged = merged + p
+            }
+            guard let blob = try? encoder.encode(merged),
+                  let str = String(data: blob, encoding: .utf8) else { continue }
+            _ = self.lldb?.compactRollup(targetKey, value: str, removing: sourceKeys)
+        }
+    }
+
+    private func compactDictPair(prefix: String, now: Int) {
+        let groups = self.groupByTargetBucket(prefix: prefix, now: now)
+        let decoder = JSONDecoder()
+        let encoder = JSONEncoder()
+        for (targetTS, sourceKeys) in groups {
+            var merged: [String: NetPair] = [:]
+            let targetKey = "\(prefix)@\(targetTS)"
+            if let existing = self.lldb?.findOne(targetKey), !existing.isEmpty,
+               let data = existing.data(using: .utf8),
+               let prev = try? decoder.decode([String: NetPair].self, from: data) {
+                merged.merge(prev, uniquingKeysWith: +)
+            }
+            for sk in sourceKeys {
+                guard let raw = self.lldb?.findOne(sk), !raw.isEmpty,
+                      let data = raw.data(using: .utf8),
+                      let d = try? decoder.decode([String: NetPair].self, from: data) else { continue }
+                merged.merge(d, uniquingKeysWith: +)
+            }
+            guard let blob = try? encoder.encode(merged),
+                  let str = String(data: blob, encoding: .utf8) else { continue }
+            _ = self.lldb?.compactRollup(targetKey, value: str, removing: sourceKeys)
+        }
+    }
+
     /// Legacy per-prefix cleanup retained for `setup(...)` callers.
+    /// Tier-managed prefixes opt out — they have their own retention via
+    /// `compactNetTiers()` and must not get the global 7-day cutoff applied.
+    /// (Without this guard, every reader's setup() at app launch would wipe
+    ///  any imported history older than `history_retention_days`.)
     private func cleanPrefix(_ key: String) {
+        if Self.isTieredTopLevel(key) { return }
         guard let keys = self.lldb?.keys(key) as? [String] else { return }
         let cutoff = Date().currentTimeSeconds() - self.ttl
         var toDelete: [String] = []
@@ -189,6 +336,7 @@ public class DB {
         // Initial run after 60s to let the app settle, then every hour.
         timer.schedule(deadline: .now() + 60, repeating: 60 * 60)
         timer.setEventHandler { [weak self] in
+            self?.compactNetTiers()
             self?.pruneExpired()
         }
         timer.resume()
