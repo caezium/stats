@@ -79,10 +79,23 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     }
     
     private var lastDBWrite: Date? = nil
-    
+
+    /// How often the auto-persist path commits a timestamped row to the lldb
+    /// history. 60 s by default — for CPU/RAM/Battery/Temp/Freq the user does
+    /// not need per-second granularity in the History view, and the previous
+    /// behaviour (`interval * 10` → about every 18 s) accounted for ~15 MB of
+    /// the per-prefix weekly storage cost. The live popup still updates at
+    /// `interval` (the callback's `callbackHandler` fires every read);
+    /// only the on-disk cadence is throttled.
+    ///
+    /// Readers that need denser history (currently: none — Network does its
+    /// own explicit insert at 1 s through `history: false`) can override this
+    /// in their construction site.
+    public var historyCadenceSeconds: TimeInterval = 60
+
     private var alignWorkItem: DispatchWorkItem?
     private let alignQueue = DispatchQueue(label: "eu.exelban.readerAlignQueue")
-    
+
     public init(_ module: ModuleType, popup: Bool = false, preview: Bool = false, history: Bool = true, callback: @escaping (T?) -> Void = {_ in }) {
         self.popup = popup
         self.preview = preview
@@ -117,12 +130,14 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         if let value {
             self.callbackHandler(value)
             SystemStats.shared.send(key: moduleKey, value: value)
-            if let ts = self.lastDBWrite, let interval = self.interval, Date().timeIntervalSince(ts) > interval * 10 {
+            // Throttle disk writes to `historyCadenceSeconds` (default 60 s).
+            // The popup still gets every read via callbackHandler above; only
+            // the on-disk time series is sampled.
+            let now = Date()
+            if self.lastDBWrite == nil
+                || now.timeIntervalSince(self.lastDBWrite!) >= self.historyCadenceSeconds {
                 DB.shared.insert(key: moduleKey, value: value, ts: self.history)
-                self.lastDBWrite = Date()
-            } else if self.lastDBWrite == nil {
-                DB.shared.insert(key: moduleKey, value: value, ts: self.history)
-                self.lastDBWrite = Date()
+                self.lastDBWrite = now
             }
         }
     }

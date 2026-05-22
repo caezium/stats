@@ -178,7 +178,10 @@ Connection: close\r
             return "{\"ok\":true,\"app\":\"Stats\",\"port\":\(self.port)}"
 
         case "/info":
-            let prefixes = DB.shared.listPrefixes()
+            // Blocking: MCP `health` and `summarize_period` rely on the full prefix
+            // list to drive their workflow. Returning empty during the cold-start
+            // cache window would silently produce wrong agent output.
+            let prefixes = DB.shared.listPrefixesBlocking()
             let retentionDays = Store.shared.int(key: "history_retention_days", defaultValue: 7)
             let now = Date().currentTimeSeconds()
             let payload: [String: Any] = [
@@ -189,7 +192,7 @@ Connection: close\r
             return Self.jsonString(payload)
 
         case "/modules":
-            return Self.jsonString(["modules": DB.shared.listPrefixes()])
+            return Self.jsonString(["modules": DB.shared.listPrefixesBlocking()])
 
         case "/metrics":
             guard let prefix = query["prefix"], !prefix.isEmpty else {
@@ -199,10 +202,23 @@ Connection: close\r
             let until = query["until"].flatMap(Int.init)
             let bucket = query["bucket"].flatMap(Int.init)
 
-            let series = DB.shared.findTimeSeries(prefix: prefix, since: since, until: until)
+            // When the caller passes `bucket`, route through the streaming stride
+            // sampler instead of materializing the whole range. A 7-day query on
+            // Network@ProcessReader is ~600k rows × ~1KB; pulling it all into the
+            // QueryServer's address space just to group by floor(ts/bucket) and
+            // throw most of it away was the same freeze as the History view.
+            // Stride-sampled retrieval pays only for the rows it returns.
             if let bucket = bucket, bucket > 0 {
-                return Self.serializeBucketed(series, bucket: bucket)
+                let now = Date().currentTimeSeconds()
+                let lo = max(0, since ?? 0)
+                let hi = until ?? now
+                let series = DB.shared.findTimeSeriesByStride(
+                    prefix: prefix, since: lo, until: hi, strideSec: bucket
+                )
+                return Self.serializeSeries(series)
             }
+
+            let series = DB.shared.findTimeSeries(prefix: prefix, since: since, until: until)
             return Self.serializeSeries(series)
 
         case "/latest":
@@ -266,30 +282,7 @@ Connection: close\r
         return out
     }
 
-    /// Group by `floor(ts / bucket)`, emit one row per bucket containing the last
-    /// raw value seen in that window. Cheap downsampling for long-range queries.
-    private static func serializeBucketed(_ series: [(ts: Int, json: String)], bucket: Int) -> String {
-        guard bucket > 0 else { return serializeSeries(series) }
-        var lastByBucket: [Int: (ts: Int, json: String)] = [:]
-        for entry in series {
-            let b = entry.ts / bucket
-            if let existing = lastByBucket[b] {
-                if entry.ts > existing.ts { lastByBucket[b] = entry }
-            } else {
-                lastByBucket[b] = entry
-            }
-        }
-        let bucketed = lastByBucket.values.sorted { $0.ts < $1.ts }
-        var out = "["
-        var first = true
-        for entry in bucketed {
-            if !first { out.append(",") }
-            first = false
-            out.append("{\"ts\":\(entry.ts),\"value\":")
-            out.append(entry.json)
-            out.append("}")
-        }
-        out.append("]")
-        return out
-    }
+    // (Bucketed serialization moved into the query layer: `/metrics?bucket=N`
+    //  now routes to `DB.findTimeSeriesByStride` so the QueryServer never has
+    //  to materialize a multi-GB raw window just to throw most of it away.)
 }

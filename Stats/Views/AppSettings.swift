@@ -52,10 +52,86 @@ class ApplicationSettings: NSStackView {
 
     // MARK: - History (time-series store + Claude Code MCP query server)
 
-    private var historyRetentionDays: Int {
+    // MARK: - History storage backing properties
+    //
+    // The settings panel exposes two decisions: "detailed days" (1 s rows for
+    // every prefix) and "summary days" (minute → hour rollup, Network only).
+    // Both write through to the underlying Store keys the DB reads on every
+    // maintenance tick. Splitting the summary value between the minute and
+    // hour tiers happens here rather than in the UI action so the property
+    // setters stay the single source of truth.
+
+    /// Detailed (1 s) window. This is the user-facing "Keep detailed data
+    /// for" picker. Writes to two Store keys at once:
+    ///   * `history_retention_days` — the global TTL for non-tiered prefixes
+    ///   * `history_tier_net_native_days` — the Net 1 s window before rollup
+    /// They moved in lockstep before via the implicit `.full` preset; now the
+    /// UI surfaces a single knob so the user can't get them out of sync.
+    private var detailedDays: Int {
         get { Store.shared.int(key: "history_retention_days", defaultValue: 7) }
-        set { Store.shared.set(key: "history_retention_days", value: newValue) }
+        set {
+            Store.shared.set(key: "history_retention_days",       value: newValue)
+            Store.shared.set(key: "history_tier_net_native_days", value: newValue)
+        }
     }
+
+    /// Summary window length (days past the detailed cutoff). `-1` means
+    /// "Forever" — written through as `NetTierPolicy.unlimitedSentinel` so
+    /// `tierBucket` treats the hour tier as never-expiring. The minute/hour
+    /// split is fixed at "first 30 days of the summary window goes to the
+    /// 1-minute tier, the rest goes to the 1-hour tier" — that boundary used
+    /// to be hard-coded and remains a reasonable default; if it becomes
+    /// user-visible later it'll be a separate knob, not a tweak here.
+    private var summaryDays: Int {
+        get {
+            let hour = Store.shared.int(key: "history_tier_net_hour_days",
+                                        defaultValue: DB.NetTierPolicy.unlimitedSentinel)
+            if hour >= DB.NetTierPolicy.unlimitedSentinel { return -1 }
+            let minute = Store.shared.int(key: "history_tier_net_minute_days", defaultValue: 30)
+            return minute + hour
+        }
+        set {
+            if newValue < 0 {
+                // Forever — keep the 1 m tier at 30 d (matches default) and
+                // let the hour tier run unbounded.
+                Store.shared.set(key: "history_tier_net_minute_days", value: 30)
+                Store.shared.set(key: "history_tier_net_hour_days",
+                                 value: DB.NetTierPolicy.unlimitedSentinel)
+            } else if newValue == 0 {
+                // No summary tier at all — drop straight after the detailed
+                // cutoff, like non-Net prefixes.
+                Store.shared.set(key: "history_tier_net_minute_days", value: 0)
+                Store.shared.set(key: "history_tier_net_hour_days",   value: 0)
+            } else {
+                let minute = min(30, newValue)
+                let hour = max(0, newValue - minute)
+                Store.shared.set(key: "history_tier_net_minute_days", value: minute)
+                Store.shared.set(key: "history_tier_net_hour_days",   value: hour)
+            }
+        }
+    }
+
+    /// Walks the lldb directory once at panel-open and formats the total. Not
+    /// kept live — disk size changes on the hourly maintenance cycle (and
+    /// during initial import), neither of which is timing-sensitive enough
+    /// to warrant a refresh timer. Reopening the panel re-reads.
+    private func formattedHistorySize() -> String {
+        let fm = FileManager.default
+        guard let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return "—" }
+        let lldb = support.appendingPathComponent("Stats").appendingPathComponent("lldb")
+        guard let enumerator = fm.enumerator(at: lldb, includingPropertiesForKeys: [.fileSizeKey]) else { return "—" }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+                total += Int64(size)
+            }
+        }
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        f.allowedUnits = [.useMB, .useGB]
+        return f.string(fromByteCount: total)
+    }
+
     private var queryServerEnabled: Bool {
         get { Store.shared.bool(key: "history_query_enabled", defaultValue: true) }
         set { Store.shared.set(key: "history_query_enabled", value: newValue) }
@@ -131,17 +207,31 @@ class ApplicationSettings: NSStackView {
             ))
         ]))
 
-        scrollView.stackView.addArrangedSubview(PreferencesSection(title: localizedString("History"), [
-            PreferencesRow(localizedString("Retention period"), component: selectView(
-                action: #selector(self.toggleHistoryRetention),
-                items: HistoryRetentionOptions,
-                selected: "\(self.historyRetentionDays)"
+        // "History storage" is one decision split across two complementary
+        // knobs (detailed window + summary window) plus a live size readout.
+        // The MCP query server used to live here too but it's a completely
+        // separate concern (network endpoint, not storage policy) and the
+        // user surfaced that confusion — it now has its own section below.
+        scrollView.stackView.addArrangedSubview(PreferencesSection(title: localizedString("History storage"), [
+            PreferencesRow(localizedString("Currently using"), component: textView(self.formattedHistorySize())),
+            PreferencesRow(localizedString("Keep detailed data for"), component: selectView(
+                action: #selector(self.toggleDetailedDays),
+                items: HistoryDetailedDaysOptions,
+                selected: "\(self.detailedDays)"
             )),
-            PreferencesRow(localizedString("Query server"), component: switchView(
+            PreferencesRow(localizedString("Keep summary data for"), component: selectView(
+                action: #selector(self.toggleSummaryDays),
+                items: HistorySummaryDaysOptions,
+                selected: "\(self.summaryDays)"
+            ))
+        ]))
+
+        scrollView.stackView.addArrangedSubview(PreferencesSection(title: localizedString("MCP query server"), [
+            PreferencesRow(localizedString("Enabled"), component: switchView(
                 action: #selector(self.toggleQueryServer),
                 state: self.queryServerEnabled
             )),
-            PreferencesRow(localizedString("Query port"), component: textView("127.0.0.1:\(self.queryServerPort)"))
+            PreferencesRow(localizedString("Port"), component: textView("127.0.0.1:\(self.queryServerPort)"))
         ]))
         
         self.combinedModulesView = PreferencesSection([
@@ -536,9 +626,19 @@ class ApplicationSettings: NSStackView {
         self.systemWidgetsUpdatesState = sender.state == NSControl.StateValue.on
     }
 
-    @objc private func toggleHistoryRetention(_ sender: NSMenuItem) {
+    /// Detailed-window picker. The property setter writes to both the
+    /// global TTL and the Net native key so they can't drift apart.
+    @objc private func toggleDetailedDays(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String, let days = Int(key) else { return }
-        self.historyRetentionDays = days
+        self.detailedDays = days
+    }
+
+    /// Summary-window picker. `-1` is the "Forever" sentinel — the property
+    /// setter expands it into `NetTierPolicy.unlimitedSentinel` for the
+    /// underlying hour-days key.
+    @objc private func toggleSummaryDays(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let days = Int(key) else { return }
+        self.summaryDays = days
     }
 
     @objc private func toggleQueryServer(_ sender: NSButton) {

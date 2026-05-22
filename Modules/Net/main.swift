@@ -184,10 +184,20 @@ public class Network: Module {
         )
         guard self.available else { return }
         
-        self.usageReader = UsageReader(.network) { [weak self] value in
+        // history: false — these readers do their own time-series persistence
+        // in `read()` under `Network@UsageReader@<ts>` / `Network@ProcessReader@<ts>`
+        // (compact `{upload,download}` and `{<app>:{upload,download}}` shapes that
+        // match the netmon importer). The base-class auto-persist would write a
+        // `Network_Usage` / `[Network_Process]` value at the SAME key on its
+        // every-`interval*10`-seconds cadence, overwriting our compact row with
+        // a shape `compactNetTiers()` cannot decode — those rows would then be
+        // silently destroyed at the 30d rollup. Keeping auto-persist off avoids
+        // the collision; the bare-key latest-value mirror in `DB.insert` still
+        // gets refreshed regardless of `ts:`, so live popup rendering is fine.
+        self.usageReader = UsageReader(.network, history: false) { [weak self] value in
             self?.usageCallback(value)
         }
-        self.processReader = ProcessReader(.network) { [weak self] value in
+        self.processReader = ProcessReader(.network, history: false) { [weak self] value in
             if let list = value {
                 self?.popupView.processCallback(list)
             }

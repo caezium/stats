@@ -68,13 +68,30 @@ public let TemperatureUnits: [KeyValue_t] = [
     KeyValue_t(key: "fahrenheit", value: "Fahrenheit", additional: UnitTemperature.fahrenheit)
 ]
 
-public let HistoryRetentionOptions: [KeyValue_t] = [
-    KeyValue_t(key: "1", value: "1 day"),
-    KeyValue_t(key: "3", value: "3 days"),
-    KeyValue_t(key: "7", value: "7 days"),
-    KeyValue_t(key: "14", value: "14 days"),
-    KeyValue_t(key: "30", value: "30 days"),
-    KeyValue_t(key: "90", value: "90 days")
+/// "Detailed" window — how long each prefix keeps its native 1-second rows.
+/// For non-tiered prefixes (CPU/RAM/Battery/Sensors/etc.) this is the full
+/// TTL: rows past this age are deleted. For Network (the only tier-managed
+/// prefix today) this is the 1-second window before rollup begins.
+public let HistoryDetailedDaysOptions: [KeyValue_t] = [
+    KeyValue_t(key: "1",   value: "1 day"),
+    KeyValue_t(key: "3",   value: "3 days"),
+    KeyValue_t(key: "7",   value: "7 days"),
+    KeyValue_t(key: "14",  value: "14 days"),
+    KeyValue_t(key: "30",  value: "30 days"),
+    KeyValue_t(key: "90",  value: "90 days")
+]
+
+/// "Summary" window — how long Network history is kept past the detailed
+/// window, rolled up into 1-minute then 1-hour buckets. Applies to Net only
+/// because non-Net data shapes don't have a safe aggregation (sum vs avg vs
+/// last varies by reader); other prefixes simply drop at the detailed
+/// cutoff. The sentinel `-1` means "keep forever at the hour tier".
+public let HistorySummaryDaysOptions: [KeyValue_t] = [
+    KeyValue_t(key: "0",    value: "None \u{2014} drop at detailed cutoff"),
+    KeyValue_t(key: "30",   value: "30 days"),
+    KeyValue_t(key: "90",   value: "90 days"),
+    KeyValue_t(key: "365",  value: "1 year"),
+    KeyValue_t(key: "-1",   value: "Forever")
 ]
 
 public let CombinedModulesSpacings: [KeyValue_t] = [
