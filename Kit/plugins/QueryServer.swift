@@ -184,10 +184,36 @@ Connection: close\r
             let prefixes = DB.shared.listPrefixesBlocking()
             let retentionDays = Store.shared.int(key: "history_retention_days", defaultValue: 7)
             let now = Date().currentTimeSeconds()
+
+            // Per-prefix staleness — for each prefix, the most recent
+            // timestamped row's age in seconds. Lets the History view warn
+            // about dead readers (e.g. the FrequencyReader Task deadlock
+            // bug) without restarting Stats. `nil`/missing entry means we
+            // couldn't find any timestamped row at all for that prefix —
+            // distinct from "old data": brand-new prefixes show up here.
+            var staleness: [[String: Any]] = []
+            staleness.reserveCapacity(prefixes.count)
+            for prefix in prefixes {
+                if let latest = DB.shared.findLatestTimeSeries(prefix: prefix) {
+                    staleness.append([
+                        "prefix": prefix,
+                        "latest_ts": latest.ts,
+                        "age_seconds": max(0, now - latest.ts)
+                    ])
+                } else {
+                    staleness.append([
+                        "prefix": prefix,
+                        "latest_ts": NSNull(),
+                        "age_seconds": NSNull()
+                    ])
+                }
+            }
+
             let payload: [String: Any] = [
                 "now": now,
                 "retention_days": retentionDays,
-                "prefixes": prefixes
+                "prefixes": prefixes,
+                "readers": staleness
             ]
             return Self.jsonString(payload)
 

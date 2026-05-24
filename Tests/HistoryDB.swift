@@ -386,3 +386,142 @@ final class HistoryDBTests: XCTestCase {
         XCTAssertEqual(prefixes.sorted(), ["A@One", "B@Two", "C@Three"])
     }
 }
+
+// MARK: - Reader.tick() popup-closed gating
+//
+// Pins the energy-saving contract added in c98a7db: when the popup is
+// closed AND the reader is keeping itself alive for history, we run
+// `read()` only every `interval * popupClosedIntervalMultiplier` seconds
+// instead of every tick. Readers that opt out (multiplier=1, or
+// history=false && selfPersists=false) run at every tick. The bug we
+// caught earlier — a Reader silently dying without anyone noticing —
+// was made twice as scary by there being no test of this surface; this
+// closes that gap.
+//
+// `Reader.tick()` is `internal` (not `private`) precisely so this file
+// can drive it from `@testable import Kit`. Subclasses still override
+// `read()` for production behaviour.
+
+private final class TickRecorder: Reader<Int> {
+    var reads = 0
+    override func read() {
+        reads += 1
+    }
+}
+
+final class ReaderTickTests: XCTestCase {
+    /// Popup open (`unlock`) is the live-popup case — every tick must
+    /// reach `read()` no matter how the multiplier is set, because the
+    /// chart in the popup is the consumer.
+    func testTick_popupOpen_alwaysReads() {
+        let r = TickRecorder(.CPU, popup: true, history: true)
+        r.interval = 1.0
+        r.popupClosedIntervalMultiplier = 5
+        r.unlock()
+
+        for _ in 0..<10 { r.tick() }
+        XCTAssertEqual(r.reads, 10, "popup open => no gating")
+    }
+
+    /// Core throttle contract: popup closed + history-keeping reader =>
+    /// only one read per gate window (`interval * multiplier`). Burst of
+    /// ticks within the window is dropped; first tick past the window
+    /// passes.
+    func testTick_popupClosedHistory_throttlesWithinWindowThenReleases() {
+        let r = TickRecorder(.CPU, popup: true, history: true)
+        r.interval = 0.05                   // 50 ms nominal tick
+        r.popupClosedIntervalMultiplier = 5 // gate window = 250 ms
+        r.lock()
+
+        r.tick()                             // 1st always passes (lastGatedRead == nil)
+        XCTAssertEqual(r.reads, 1)
+
+        for _ in 0..<10 { r.tick() }         // burst within the gate window
+        XCTAssertEqual(r.reads, 1, "subsequent ticks within gate window must be dropped")
+
+        Thread.sleep(forTimeInterval: 0.3)   // > 250 ms
+        r.tick()
+        XCTAssertEqual(r.reads, 2, "tick past gate window must read")
+    }
+
+    /// Net readers' opt-out. Their per-tick value is a delta and gating
+    /// would inflate "bytes per sample" 5×, so they set multiplier=1.
+    /// This must reproduce the popup-open behaviour even while locked.
+    func testTick_multiplierOneDisablesGate() {
+        let r = TickRecorder(.CPU, popup: true, history: true)
+        r.interval = 1.0
+        r.popupClosedIntervalMultiplier = 1
+        r.lock()
+
+        for _ in 0..<10 { r.tick() }
+        XCTAssertEqual(r.reads, 10, "multiplier=1 must bypass the gate even when locked")
+    }
+
+    /// Readers that aren't keeping history alive in the background take
+    /// the fast path — gate is skipped entirely. Upstream popup-only
+    /// behaviour: the Repeater shouldn't even be running, but if it is,
+    /// the gate doesn't introduce new throttling.
+    func testTick_neitherHistoryNorSelfPersists_skipsGate() {
+        let r = TickRecorder(.CPU, popup: true, history: false, selfPersists: false)
+        r.interval = 1.0
+        r.popupClosedIntervalMultiplier = 5
+        r.lock()
+
+        for _ in 0..<5 { r.tick() }
+        XCTAssertEqual(r.reads, 5, "non-history non-selfPersists reader skips the gate")
+    }
+
+    /// `selfPersists` is the Net readers' flag — they write their own
+    /// history rows so they're history-keeping for the gate's purposes,
+    /// even though `history: false`. Without this the locked-state guard
+    /// would let them run at full 1 s when the popup is closed, defeating
+    /// the energy win for the readers that opt INTO gating via multiplier.
+    func testTick_selfPersistsIsTreatedAsHistoryKeeping() {
+        let r = TickRecorder(.CPU, popup: true, history: false, selfPersists: true)
+        r.interval = 0.05
+        r.popupClosedIntervalMultiplier = 5
+        r.lock()
+
+        r.tick()
+        for _ in 0..<10 { r.tick() }
+        XCTAssertEqual(r.reads, 1, "selfPersists is a history-keeping reader for the gate")
+    }
+
+    /// `lastReadAt` is the diagnostics surface — QueryServer /info reads
+    /// it (well, reads the per-prefix latest @ts, which is the lldb-side
+    /// equivalent) to flag silent readers. Pin that the tick path
+    /// actually updates it.
+    func testTick_recordsLastReadAt() throws {
+        let r = TickRecorder(.CPU, popup: true, history: true)
+        r.interval = 1.0
+        r.popupClosedIntervalMultiplier = 1
+        r.unlock()
+        XCTAssertNil(r.lastReadAt, "lastReadAt nil before any tick")
+
+        let before = Date()
+        r.tick()
+        let after = Date()
+
+        let stamp = try XCTUnwrap(r.lastReadAt)
+        XCTAssertGreaterThanOrEqual(stamp, before)
+        XCTAssertLessThanOrEqual(stamp, after)
+    }
+
+    /// Gate-dropped ticks must NOT advance lastReadAt — otherwise a
+    /// reader whose only successful read happened 10 minutes ago would
+    /// keep appearing "fresh" because tick() kept firing.
+    func testTick_gatedDropDoesNotAdvanceLastReadAt() throws {
+        let r = TickRecorder(.CPU, popup: true, history: true)
+        r.interval = 1.0
+        r.popupClosedIntervalMultiplier = 5
+        r.lock()
+
+        r.tick()
+        let firstStamp = try XCTUnwrap(r.lastReadAt)
+        Thread.sleep(forTimeInterval: 0.01)
+        r.tick()   // gated — dropped
+        r.tick()   // gated — dropped
+        XCTAssertEqual(r.reads, 1)
+        XCTAssertEqual(r.lastReadAt, firstStamp, "dropped ticks must not refresh lastReadAt")
+    }
+}

@@ -180,12 +180,18 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     /// when the popup is closed and we're only running for history's sake.
     /// Called from the Repeater closures in `startNormalRepeater` /
     /// `startAlignedRepeater` instead of `read()` directly.
-    private func tick() {
+    ///
+    /// `internal` (rather than `private`) so `Tests/HistoryDB.swift` can drive
+    /// the gate directly from `@testable import Kit` — see `ReaderTickTests`.
+    /// Not part of the public Reader contract; subclasses still override
+    /// `read()`, not this.
+    internal func tick() {
         // Fast path — popup open, or this reader has no business writing
         // history rows in the background, or gating is disabled. Always read.
         let keepsHistoryAlive = self.history || self.selfPersists
         guard self.locked, keepsHistoryAlive, self.popupClosedIntervalMultiplier > 1 else {
             self.read()
+            self.lastReadAt = Date()
             return
         }
         let interval = self.interval ?? 1.0
@@ -196,7 +202,15 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         }
         self.lastGatedRead = now
         self.read()
+        self.lastReadAt = now
     }
+
+    /// Wall-clock time `tick()` last invoked `read()`. Surfaced via the
+    /// QueryServer so consumers (the History view's toolbar, an MCP probe)
+    /// can detect a reader that's gone silent without restarting Stats. Nil
+    /// until the first successful tick. Not thread-safe — only `tick()`
+    /// writes it, and `tick()` runs on the Repeater queue.
+    public private(set) var lastReadAt: Date?
     
     open func start() {
         // Upstream behavior: popup/preview readers only run on-demand and

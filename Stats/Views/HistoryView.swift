@@ -163,6 +163,12 @@ private struct HistorySnapshot {
     var topNet:  [ProcessRow] = []
     var generatedAt: Date = Date()
     var prefixCount: Int = 0
+    /// Number of prefixes whose newest timestamped row is older than
+    /// `HistoryLoader.staleReaderThresholdSeconds`. Surfaced as a "N silent"
+    /// warning in the toolbar so a deadlocked reader (we hit two of those
+    /// in 2026-05) is visible without restarting Stats. Zero when nothing
+    /// is stale.
+    var staleReaderCount: Int = 0
 
     /// Window the snapshot was loaded for, in unix seconds. Used as the chart's
     /// explicit x-domain so a single stray ts (e.g. ts=0 from a malformed key)
@@ -180,6 +186,14 @@ private enum HistoryLoader {
     // problem — we ask the DB for up to ~720 rows spread evenly across the
     // window, so the cost is bounded at every range while the top-N stays
     // representative. The cap is gone; `tableSince` now matches `since`.
+
+    /// A reader is considered "silent" if its newest timestamped row is
+    /// older than this. 5 min covers the slowest healthy cadence (60 s
+    /// write throttle × 5 misses) with margin — anything stale longer
+    /// than that is either a deadlocked reader, an idle-system Net
+    /// ProcessReader (which writes only on activity), or a reader that
+    /// hasn't run since startup yet.
+    static let staleReaderThresholdSeconds: Int = 5 * 60
 
     static func load(rangeMinutes: Int) -> HistorySnapshot {
         let now = Int(Date().timeIntervalSince1970)
@@ -255,7 +269,23 @@ private enum HistoryLoader {
         }
         snap.topNet = topNetByDelta(since: tableSince, n: 10)
 
-        snap.prefixCount = DB.shared.listPrefixes().count
+        let prefixes = DB.shared.listPrefixes()
+        snap.prefixCount = prefixes.count
+
+        // Per-prefix staleness scan. Cost: one reverse-iterator seek per
+        // prefix (DB.findLatestTimeSeries is O(log N)), so cheap even at
+        // 17+ prefixes. Net@ProcessReader writes only on activity so it can
+        // legitimately stay silent for a few minutes on a quiet system —
+        // accept the false positive there rather than maintain per-prefix
+        // thresholds, because the alternative (no warning) is what let two
+        // dead readers hide for 50 h.
+        var stale = 0
+        for p in prefixes {
+            guard let latest = DB.shared.findLatestTimeSeries(prefix: p) else { continue }
+            if now - latest.ts > Self.staleReaderThresholdSeconds { stale += 1 }
+        }
+        snap.staleReaderCount = stale
+
         snap.generatedAt = Date()
         snap.windowSince = Date(timeIntervalSince1970: TimeInterval(since))
         snap.windowUntil = Date(timeIntervalSince1970: TimeInterval(now))
@@ -526,6 +556,17 @@ struct HistoryRootView: View {
                     Text("\(snapshot.prefixCount) streams")
                     Text("·").foregroundStyle(.tertiary)
                     Text("\(Int(DB.shared.ttl / 86400))d retained")
+                    if snapshot.staleReaderCount > 0 {
+                        Text("·").foregroundStyle(.tertiary)
+                        HStack(spacing: 3) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .imageScale(.small)
+                                .foregroundStyle(.yellow)
+                            Text("\(snapshot.staleReaderCount) silent")
+                                .foregroundStyle(.yellow)
+                        }
+                        .help("Reader(s) haven't written a sample in over 5 minutes. Stats may need to be restarted, or these prefixes are inherently sparse (e.g. Network@ProcessReader on an idle system).")
+                    }
                 }
             }
             .font(.caption)
