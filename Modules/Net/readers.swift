@@ -167,6 +167,10 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     private var lastDetailsReadTS: Date = .distantPast
     
     public override func setup() {
+        // Same rationale as ProcessReader.setup: bandwidth is delta-based,
+        // so the popup-closed throttle would inflate "bytes per sample"
+        // on gated ticks and the throughput chart would look wrong.
+        self.popupClosedIntervalMultiplier = 1
         self.reachability.reachable = { [weak self] in
             guard let self else { return }
             if self.active {
@@ -639,8 +643,15 @@ public class ProcessReader: Reader<[Network_Process]> {
     
     public override func setup() {
         self.popup = true
+        // Don't apply the popup-closed throttle to Net readers. Their
+        // per-app bandwidth is a delta against the previous tick, so a
+        // 5×-gated tick would aggregate 5 s of bytes into one row — the
+        // throughput chart would show 5× spikes at those samples. CPU/RAM
+        // readers are the dominant energy cost anyway; leaving Net at 1 s
+        // is fine.
+        self.popupClosedIntervalMultiplier = 1
     }
-    
+
     public override func read() {
         if self.numberOfProcesses == 0 {
             return

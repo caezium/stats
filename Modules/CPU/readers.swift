@@ -361,10 +361,19 @@ public class FrequencyReader: Reader<CPU_Frequency> {
         let minSCoreFreq = Double(self.sCoreFreqs.min() ?? 0)
         
         Task {
+            // Without this defer the reader silently dies if `getSamples()`
+            // throws or hangs partway: `self.isReading = false` at the
+            // bottom is never reached, every subsequent `read()` returns at
+            // the `!self.isReading` guard, and the time-series goes dark
+            // until the process restarts. We hit that on two of three
+            // user devices after running for ~2 days. `defer` runs on
+            // every exit path including thrown errors and Task cancellation.
+            defer { self.isReading = false }
+
             var eCores: [Double] = []
             var sCores: [Double] = []
             var pCores: [Double] = []
-            
+
             for (samples, _) in await self.getSamples() {
                 var eCore: [Double] = []
                 var pCore: [Double] = []
@@ -418,10 +427,10 @@ public class FrequencyReader: Reader<CPU_Frequency> {
             let value: Double? = activeCores > 0 ? totalFreq / activeCores : nil
             
             self.callback(CPU_Frequency(value: value, eCore: eFreq, pCore: pFreq, sCore: sFreq))
-            self.isReading = false
+            // `isReading = false` runs via the `defer` at the top of the Task.
         }
     }
-    
+
     private func calculateFrequencies(dict: CFDictionary, freqs: [Int32]) -> Double {
         let items = self.getResidencies(dict: dict)
         guard let offset = items.firstIndex(where: { $0.0 != "IDLE" && $0.0 != "DOWN" && $0.0 != "OFF" }) else { return 0 }

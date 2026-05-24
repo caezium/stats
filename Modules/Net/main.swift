@@ -194,10 +194,18 @@ public class Network: Module {
         // silently destroyed at the 30d rollup. Keeping auto-persist off avoids
         // the collision; the bare-key latest-value mirror in `DB.insert` still
         // gets refreshed regardless of `ts:`, so live popup rendering is fine.
-        self.usageReader = UsageReader(.network, history: false) { [weak self] value in
+        //
+        // selfPersists: true — opt into the fork's "keep the Repeater running
+        // when the popup is closed" behaviour, which `history: true` readers
+        // get automatically. Without it these readers go dormant the moment
+        // the popup closes (upstream's popup-only contract), and the
+        // Network@*Reader time series flatlines until the user reopens the
+        // popup — which was producing the "Top Network: No process activity"
+        // and "Network throughput is empty" reports.
+        self.usageReader = UsageReader(.network, history: false, selfPersists: true) { [weak self] value in
             self?.usageCallback(value)
         }
-        self.processReader = ProcessReader(.network, history: false) { [weak self] value in
+        self.processReader = ProcessReader(.network, history: false, selfPersists: true) { [weak self] value in
             if let list = value {
                 self?.popupView.processCallback(list)
             }

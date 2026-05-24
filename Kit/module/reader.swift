@@ -93,14 +93,44 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     /// in their construction site.
     public var historyCadenceSeconds: TimeInterval = 60
 
+    /// When the popup is closed (`locked == true`) AND the reader is keeping
+    /// itself alive for history (`history: true`), the Repeater still fires
+    /// every `interval` seconds (typically 1 s). Each tick may run expensive
+    /// per-process kernel calls the user can't even see — the dominant
+    /// energy cost of running Stats with history enabled. This multiplier
+    /// gates the actual `read()` so we only pay that cost every
+    /// `interval * popupClosedIntervalMultiplier` seconds while the popup
+    /// is closed. Default 5 cuts CPU ~5× for the snapshot-based readers
+    /// (CPU/RAM/Battery/Sensors).
+    ///
+    /// Net readers (UsageReader / ProcessReader) override to 1 because their
+    /// per-app bandwidth math is delta-based — skipping ticks would coarsen
+    /// the deltas and inflate "bytes per sample" in the chart.
+    public var popupClosedIntervalMultiplier: Int = 5
+
+    private var lastGatedRead: Date?
+
     private var alignWorkItem: DispatchWorkItem?
     private let alignQueue = DispatchQueue(label: "eu.exelban.readerAlignQueue")
 
-    public init(_ module: ModuleType, popup: Bool = false, preview: Bool = false, history: Bool = true, callback: @escaping (T?) -> Void = {_ in }) {
+    /// True when the reader takes responsibility for writing its own
+    /// timestamped history rows (via explicit `DB.shared.insert(..., ts: true)`
+    /// inside `read()`) and therefore needs to keep running in the background
+    /// like a `history: true` reader does. Set by callers that pass
+    /// `history: false` only to avoid the base-class auto-persist colliding
+    /// with their custom schema (e.g. the Net readers: their compact
+    /// `{upload,download}` rows would be silently destroyed at tier rollup
+    /// if the auto-persist also wrote a `Network_Usage`-shaped row at the
+    /// same key). Without this flag those readers go dormant when the
+    /// popup closes and the chart's time-series goes dark.
+    public var selfPersists: Bool = false
+
+    public init(_ module: ModuleType, popup: Bool = false, preview: Bool = false, history: Bool = true, selfPersists: Bool = false, callback: @escaping (T?) -> Void = {_ in }) {
         self.popup = popup
         self.preview = preview
         self.module = module
         self.history = history
+        self.selfPersists = selfPersists
         self.callbackHandler = callback
         
         super.init()
@@ -145,15 +175,38 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     open func read() {}
     open func setup() {}
     open func terminate() {}
+
+    /// Repeater entry point. Wraps `read()` so we can gate the actual work
+    /// when the popup is closed and we're only running for history's sake.
+    /// Called from the Repeater closures in `startNormalRepeater` /
+    /// `startAlignedRepeater` instead of `read()` directly.
+    private func tick() {
+        // Fast path — popup open, or this reader has no business writing
+        // history rows in the background, or gating is disabled. Always read.
+        let keepsHistoryAlive = self.history || self.selfPersists
+        guard self.locked, keepsHistoryAlive, self.popupClosedIntervalMultiplier > 1 else {
+            self.read()
+            return
+        }
+        let interval = self.interval ?? 1.0
+        let gateSeconds = interval * Double(self.popupClosedIntervalMultiplier)
+        let now = Date()
+        if let last = self.lastGatedRead, now.timeIntervalSince(last) < gateSeconds {
+            return
+        }
+        self.lastGatedRead = now
+        self.read()
+    }
     
     open func start() {
         // Upstream behavior: popup/preview readers only run on-demand and
         // bail out early when the popup window is closed (`locked`). For
-        // history-enabled readers we override that — we want the data to
-        // accumulate even when the user never opens the popup, otherwise
+        // history-enabled readers (including ones that persist their own
+        // history via `selfPersists`) we override that — we want the data
+        // to accumulate even when the user never opens the popup, otherwise
         // the per-process readers (CPU/RAM/Net/Disk/Battery) end up with
         // a near-empty time series.
-        if (self.popup || self.preview) && self.locked && !self.history {
+        if (self.popup || self.preview) && self.locked && !self.history && !self.selfPersists {
             DispatchQueue.global(qos: .background).async {
                 self.read()
             }
@@ -226,10 +279,10 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         }
         
         self.repeatTask = Repeater(seconds: Int(interval)) { [weak self] in
-            self?.read()
+            self?.tick()
         }
     }
-    
+
     private func startAlignedRepeater() {
         guard let interval = self.interval, self.repeatTask == nil else { return }
         
@@ -239,10 +292,10 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
         
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            
-            self.read()
+
+            self.tick()
             self.repeatTask = Repeater(seconds: Int(interval)) { [weak self] in
-                self?.read()
+                self?.tick()
             }
             self.repeatTask?.start()
         }
