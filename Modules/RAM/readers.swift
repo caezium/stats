@@ -125,43 +125,75 @@ public class ProcessReader: Reader<[TopProcess]> {
         if self.numberOfProcesses == 0 {
             return
         }
-        
+
+        // Was `top -l 1 -o mem ...`. Even with -l 1 (single sample) top
+        // walks every process's VM regions, which on a 500-process system
+        // dominates Stats's energy cost — Activity Monitor showed the
+        // child `top` racking up ~3,295 energy impact on its own. CPU's
+        // ProcessReader already uses ps (upstream refactor); this matches.
+        // RSS comes in kilobytes; convert to bytes for the consumer.
         let task = Process()
-        task.launchPath = "/usr/bin/top"
-        if self.combinedProcesses {
-            task.arguments = ["-l", "1", "-o", "mem", "-stats", "pid,command,mem"]
-        } else {
-            task.arguments = ["-l", "1", "-o", "mem", "-n", "\(self.numberOfProcesses)", "-stats", "pid,command,mem"]
-        }
-        
+        task.launchPath = "/bin/ps"
+        task.arguments = ["-Aceo", "pid,rss,comm", "-m"]
+
         let outputPipe = Pipe()
         let errorPipe = Pipe()
-        
+
         defer {
             outputPipe.fileHandleForReading.closeFile()
             errorPipe.fileHandleForReading.closeFile()
         }
-        
+
         task.standardOutput = outputPipe
         task.standardError = errorPipe
-        
+
         do {
             try task.run()
         } catch let err {
-            error("top(): \(err.localizedDescription)", log: self.log)
+            error("ram.ps(): \(err.localizedDescription)", log: self.log)
             return
         }
-        
+
         let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: outputData, encoding: .utf8)
         _ = String(data: errorData, encoding: .utf8)
         guard let output, !output.isEmpty else { return }
-        
+
+        // ps output, sorted by RSS desc:
+        //   PID    RSS COMM
+        //   123  654321 Some App
+        // For the non-combined path we only need the top N — stop the line
+        // walk once we have them. For the combined path the caller wants
+        // all processes (it groups by responsible-pid then truncates), so
+        // walk the full output.
+        let wantLimit = !self.combinedProcesses
         var processes: [TopProcess] = []
-        output.enumerateLines { (line, _) in
-            if line.matches("^\\d+\\** +.* +\\d+[A-Z]*\\+?\\-? *$") {
-                processes.append(ProcessReader.parseProcess(line))
+        var index = 0
+        output.enumerateLines { (line, stop) in
+            defer { index += 1 }
+            if index == 0 { return }   // header
+            let str = line.trimmingCharacters(in: .whitespaces)
+            let pidFind = str.findAndCrop(pattern: "^\\d+")
+            let rssFind = pidFind.remain.findAndCrop(pattern: "^\\d+ ")
+            let command = rssFind.remain.trimmingCharacters(in: .whitespaces)
+            let pid = Int(pidFind.cropped) ?? 0
+            let rssKB = Double(rssFind.cropped.trimmingCharacters(in: .whitespaces)) ?? 0
+            // RSS is kilobytes (1024 bytes), not the decimal-MB units the
+            // legacy top parser produced ("1234M" => value * 1000 * 1000).
+            // Using the binary unit makes Top RAM match Activity Monitor's
+            // "Real Mem" column instead of the slightly-off decimal it was.
+            let bytes = rssKB * 1024
+            var name = command
+            if let app = NSRunningApplication(processIdentifier: pid_t(pid)), let n = app.localizedName {
+                name = n
+            }
+            if command.contains("com.apple.Virtua") && name.contains("Docker") {
+                name = "Docker"
+            }
+            processes.append(TopProcess(pid: pid, name: name, usage: bytes))
+            if wantLimit && processes.count >= self.numberOfProcesses {
+                stop = true
             }
         }
         

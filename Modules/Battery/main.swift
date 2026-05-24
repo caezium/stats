@@ -72,7 +72,18 @@ public class Battery: Module {
         self.usageReader = UsageReader(.battery) { [weak self] value in
             self?.usageCallback(value)
         }
-        self.processReader = ProcessReader(.battery) { [weak self] value in
+        // history: false — Battery's ProcessReader spawns `top -l 2 -o power`,
+        // which is the single most expensive reader in Stats (two full top
+        // samples per tick to compute the power delta; ~20% sustained CPU
+        // while running). The data is a "top energy consumers right now"
+        // snapshot, not a time series — nothing in the History view or
+        // QueryServer ever queries Battery@ProcessReader@<ts>. With
+        // history: false the reader reverts to upstream's popup-only
+        // contract: runs only while the popup is open, dormant otherwise.
+        // Activity Monitor's `/usr/bin/top` child entry under Stats —
+        // that's this. Gone now unless the user is actively viewing the
+        // Battery popup.
+        self.processReader = ProcessReader(.battery, history: false) { [weak self] value in
             if let list = value {
                 self?.popupView.processCallback(list)
             }
