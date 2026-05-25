@@ -323,11 +323,37 @@ public class FrequencyReader: Reader<CPU_Frequency> {
     
     private let measurementCount: Int = 4
     private let isReadingQueue = DispatchQueue(label: "com.example.isReadingQueue")
-    
-    private var _isReading: Bool = false
-    private var isReading: Bool {
-        get { self.isReadingQueue.sync { self._isReading } }
-        set { self.isReadingQueue.sync { self._isReading = newValue } }
+
+    /// Watchdog deadline for an in-flight `read()`. The previous `isReading: Bool`
+    /// guard locked the reader out forever when `await self.getSamples()` got
+    /// stuck inside `IOReportCreateSamples` — a synchronous, uncancellable
+    /// kernel call that occasionally blocks across macOS sleep/wake or when
+    /// the IOReport subscription is otherwise stale. `defer` can't unstick
+    /// a suspended Task. We track the read's start time instead: a new tick
+    /// can proceed if either nothing is in flight, OR the in-flight Task is
+    /// older than `maxReadDuration` (assume it's hung; accept the leak).
+    /// Normal `getSamples()` runs ~500 ms, so 5 s is comfortably loose.
+    private static let maxReadDuration: TimeInterval = 5.0
+    private var _readingSince: Date? = nil
+    private var readingSince: Date? {
+        get { self.isReadingQueue.sync { self._readingSince } }
+        set { self.isReadingQueue.sync { self._readingSince = newValue } }
+    }
+    /// Returns true if a fresh `read()` may start (and atomically claims the
+    /// slot). Self-heals after `maxReadDuration` so a hung Task can't lock
+    /// the reader dark forever.
+    private func tryClaimReadSlot() -> Bool {
+        return self.isReadingQueue.sync {
+            if let since = self._readingSince,
+               Date().timeIntervalSince(since) < Self.maxReadDuration {
+                return false
+            }
+            self._readingSince = Date()
+            return true
+        }
+    }
+    private func releaseReadSlot() {
+        self.isReadingQueue.sync { self._readingSince = nil }
     }
     
     private struct IOSample {
@@ -354,21 +380,24 @@ public class FrequencyReader: Reader<CPU_Frequency> {
     }
     
     public override func read() {
-        guard !self.isReading, (!self.eCoreFreqs.isEmpty || !self.sCoreFreqs.isEmpty) && !self.pCoreFreqs.isEmpty, self.channels != nil, self.subscription != nil else { return }
-        self.isReading = true
+        guard (!self.eCoreFreqs.isEmpty || !self.sCoreFreqs.isEmpty) && !self.pCoreFreqs.isEmpty,
+              self.channels != nil,
+              self.subscription != nil,
+              self.tryClaimReadSlot() else { return }
         let minECoreFreq = Double(self.eCoreFreqs.min() ?? 0)
         let minPCoreFreq = Double(self.pCoreFreqs.min() ?? 0)
         let minSCoreFreq = Double(self.sCoreFreqs.min() ?? 0)
-        
+
         Task {
-            // Without this defer the reader silently dies if `getSamples()`
-            // throws or hangs partway: `self.isReading = false` at the
-            // bottom is never reached, every subsequent `read()` returns at
-            // the `!self.isReading` guard, and the time-series goes dark
-            // until the process restarts. We hit that on two of three
-            // user devices after running for ~2 days. `defer` runs on
-            // every exit path including thrown errors and Task cancellation.
-            defer { self.isReading = false }
+            // `releaseReadSlot()` on every exit. The earlier `defer` on a
+            // plain Bool fixed throws but not async hangs — `IOReportCreateSamples`
+            // can synchronously block forever across macOS sleep/wake, leaving
+            // the Task suspended and `defer` never running. `tryClaimReadSlot`
+            // now self-heals after `maxReadDuration`, so even a permanently
+            // suspended Task can't lock the reader dark; the leaked Task
+            // stays parked but the next tick proceeds. We hit the original
+            // hang on two of three devices after running for ~10–50 h.
+            defer { self.releaseReadSlot() }
 
             var eCores: [Double] = []
             var sCores: [Double] = []
@@ -427,7 +456,7 @@ public class FrequencyReader: Reader<CPU_Frequency> {
             let value: Double? = activeCores > 0 ? totalFreq / activeCores : nil
             
             self.callback(CPU_Frequency(value: value, eCore: eFreq, pCore: pFreq, sCore: sFreq))
-            // `isReading = false` runs via the `defer` at the top of the Task.
+            // `releaseReadSlot()` runs via the `defer` at the top of the Task.
         }
     }
 
