@@ -322,38 +322,85 @@ public class FrequencyReader: Reader<CPU_Frequency> {
     private var prev: (samples: CFDictionary, time: TimeInterval)? = nil
     
     private let measurementCount: Int = 4
-    private let isReadingQueue = DispatchQueue(label: "com.example.isReadingQueue")
+    private let readStateQueue = DispatchQueue(label: "eu.exelban.frequencyReaderStateQueue")
 
     /// Watchdog deadline for an in-flight `read()`. The previous `isReading: Bool`
     /// guard locked the reader out forever when `await self.getSamples()` got
     /// stuck inside `IOReportCreateSamples` — a synchronous, uncancellable
     /// kernel call that occasionally blocks across macOS sleep/wake or when
-    /// the IOReport subscription is otherwise stale. `defer` can't unstick
-    /// a suspended Task. We track the read's start time instead: a new tick
-    /// can proceed if either nothing is in flight, OR the in-flight Task is
-    /// older than `maxReadDuration` (assume it's hung; accept the leak).
-    /// Normal `getSamples()` runs ~500 ms, so 5 s is comfortably loose.
+    /// the IOReport subscription is otherwise stale. When the watchdog trips
+    /// we rebuild the IOReport subscription before starting the next attempt;
+    /// otherwise every retry can block on the same stale handle.
     private static let maxReadDuration: TimeInterval = 5.0
     private var _readingSince: Date? = nil
-    private var readingSince: Date? {
-        get { self.isReadingQueue.sync { self._readingSince } }
-        set { self.isReadingQueue.sync { self._readingSince = newValue } }
+    private var readToken: Int = 0
+    private var readGeneration: Int = 0
+
+    private struct ReadContext: @unchecked Sendable {
+        let token: Int
+        let generation: Int
+        let channels: CFMutableDictionary
+        let subscription: IOReportSubscriptionRef
+        let prev: (samples: CFDictionary, time: TimeInterval)?
     }
-    /// Returns true if a fresh `read()` may start (and atomically claims the
-    /// slot). Self-heals after `maxReadDuration` so a hung Task can't lock
-    /// the reader dark forever.
-    private func tryClaimReadSlot() -> Bool {
-        return self.isReadingQueue.sync {
+
+    /// Atomically claims a read slot and snapshots the IOReport handles that
+    /// this Task should use. If an older Task exceeded `maxReadDuration`, it
+    /// is abandoned: the subscription is rebuilt, the generation is advanced,
+    /// and any late callback from the old Task is ignored.
+    private func prepareReadContext() -> ReadContext? {
+        let claim = self.readStateQueue.sync { () -> (token: Int, generation: Int, reset: Bool)? in
             if let since = self._readingSince,
                Date().timeIntervalSince(since) < Self.maxReadDuration {
-                return false
+                return nil
             }
+
+            let reset = self._readingSince != nil
+            if reset {
+                self.readGeneration += 1
+            }
+            self.readToken += 1
             self._readingSince = Date()
-            return true
+            return (self.readToken, self.readGeneration, reset)
+        }
+
+        guard let claim else { return nil }
+
+        if claim.reset && !self.resetIOReportSubscription() {
+            self.releaseReadSlot(token: claim.token)
+            return nil
+        }
+
+        return self.readStateQueue.sync {
+            guard let channels = self.channels, let subscription = self.subscription else {
+                if self.readToken == claim.token {
+                    self._readingSince = nil
+                }
+                return nil
+            }
+            return ReadContext(
+                token: claim.token,
+                generation: claim.generation,
+                channels: channels,
+                subscription: subscription,
+                prev: self.prev
+            )
         }
     }
-    private func releaseReadSlot() {
-        self.isReadingQueue.sync { self._readingSince = nil }
+
+    private func isCurrentGeneration(_ generation: Int) -> Bool {
+        self.readStateQueue.sync { generation == self.readGeneration }
+    }
+
+    private func releaseReadSlot(token: Int, generation: Int? = nil, prev: (samples: CFDictionary, time: TimeInterval)? = nil) {
+        self.readStateQueue.sync {
+            if let generation, generation == self.readGeneration {
+                self.prev = prev
+            }
+            if self.readToken == token {
+                self._readingSince = nil
+            }
+        }
     }
     
     private struct IOSample {
@@ -373,37 +420,30 @@ public class FrequencyReader: Reader<CPU_Frequency> {
         self.eCoreCount = Double(SystemKit.shared.device.info.cpu?.eCores ?? 0)
         self.pCoreCount = Double(SystemKit.shared.device.info.cpu?.pCores ?? 0)
         self.sCoreCount = Double(SystemKit.shared.device.info.cpu?.sCores ?? 0)
-        self.channels = self.getChannels()
-        var dict: Unmanaged<CFMutableDictionary>?
-        self.subscription = IOReportCreateSubscription(nil, self.channels, &dict, 0, nil)
-        dict?.release()
+        self.resetIOReportSubscription()
     }
     
     public override func read() {
         guard (!self.eCoreFreqs.isEmpty || !self.sCoreFreqs.isEmpty) && !self.pCoreFreqs.isEmpty,
-              self.channels != nil,
-              self.subscription != nil,
-              self.tryClaimReadSlot() else { return }
+              let context = self.prepareReadContext() else { return }
         let minECoreFreq = Double(self.eCoreFreqs.min() ?? 0)
         let minPCoreFreq = Double(self.pCoreFreqs.min() ?? 0)
         let minSCoreFreq = Double(self.sCoreFreqs.min() ?? 0)
 
         Task {
-            // `releaseReadSlot()` on every exit. The earlier `defer` on a
-            // plain Bool fixed throws but not async hangs — `IOReportCreateSamples`
-            // can synchronously block forever across macOS sleep/wake, leaving
-            // the Task suspended and `defer` never running. `tryClaimReadSlot`
-            // now self-heals after `maxReadDuration`, so even a permanently
-            // suspended Task can't lock the reader dark; the leaked Task
-            // stays parked but the next tick proceeds. We hit the original
-            // hang on two of three devices after running for ~10–50 h.
-            defer { self.releaseReadSlot() }
+            var latestPrev = context.prev
+            defer {
+                self.releaseReadSlot(token: context.token, generation: context.generation, prev: latestPrev)
+            }
 
             var eCores: [Double] = []
             var sCores: [Double] = []
             var pCores: [Double] = []
 
-            for (samples, _) in await self.getSamples() {
+            let result = await self.getSamples(context: context)
+            latestPrev = result.prev
+
+            for (samples, _) in result.samples {
                 var eCore: [Double] = []
                 var pCore: [Double] = []
                 var sCore: [Double] = []
@@ -455,8 +495,9 @@ public class FrequencyReader: Reader<CPU_Frequency> {
             }
             let value: Double? = activeCores > 0 ? totalFreq / activeCores : nil
             
-            self.callback(CPU_Frequency(value: value, eCore: eFreq, pCore: pFreq, sCore: sFreq))
-            // `releaseReadSlot()` runs via the `defer` at the top of the Task.
+            if self.isCurrentGeneration(context.generation) {
+                self.callback(CPU_Frequency(value: value, eCore: eFreq, pCore: pFreq, sCore: sFreq))
+            }
         }
     }
 
@@ -503,7 +544,7 @@ public class FrequencyReader: Reader<CPU_Frequency> {
             channels.append(channel)
         }
         
-        let chan = channels[0]
+        guard let chan = channels.first else { return nil }
         for i in 1..<channels.count {
             IOReportMergeChannels(chan, channels[i], nil)
         }
@@ -517,23 +558,56 @@ public class FrequencyReader: Reader<CPU_Frequency> {
         return channel
     }
     
-    private func getSamples() async -> [([IOSample], TimeInterval)] {
+    @discardableResult
+    private func resetIOReportSubscription() -> Bool {
+        guard let channels = self.getChannels() else {
+            self.readStateQueue.sync {
+                self.channels = nil
+                self.subscription = nil
+                self.prev = nil
+            }
+            return false
+        }
+
+        var dict: Unmanaged<CFMutableDictionary>?
+        guard let subscription = IOReportCreateSubscription(nil, channels, &dict, 0, nil) else {
+            dict?.release()
+            self.readStateQueue.sync {
+                self.channels = channels
+                self.subscription = nil
+                self.prev = nil
+            }
+            return false
+        }
+        dict?.release()
+
+        self.readStateQueue.sync {
+            self.channels = channels
+            self.subscription = subscription
+            self.prev = nil
+        }
+        return true
+    }
+
+    private func getSamples(context: ReadContext) async -> (samples: [([IOSample], TimeInterval)], prev: (samples: CFDictionary, time: TimeInterval)?) {
         let duration = 500
         let step = UInt64(duration / self.measurementCount)
         var samples = [([IOSample], TimeInterval)]()
-        guard let initialSample = self.getSample() else { return samples }
-        var prev = self.prev ?? initialSample
+        guard let initialSample = self.getSample(subscription: context.subscription, channels: context.channels) else {
+            return (samples, context.prev)
+        }
+        var prev = context.prev ?? initialSample
         
         for _ in 0..<self.measurementCount {
             let milliseconds = UInt64(step) * 1_000_000
             do {
                 try await Task.sleep(nanoseconds: milliseconds)
             } catch {
-                if Task.isCancelled { return [] }
+                if Task.isCancelled { return ([], prev) }
                 continue
             }
             
-            guard let next = self.getSample() else { continue }
+            guard let next = self.getSample(subscription: context.subscription, channels: context.channels) else { continue }
             
             if let diffCF = IOReportCreateSamplesDelta(prev.samples, next.samples, nil) {
                 let diff = diffCF.takeRetainedValue()
@@ -543,12 +617,11 @@ public class FrequencyReader: Reader<CPU_Frequency> {
             prev = next
         }
         
-        self.prev = prev
-        return samples
+        return (samples, prev)
     }
     
-    private func getSample() -> (samples: CFDictionary, time: TimeInterval)? {
-        guard let sample = IOReportCreateSamples(self.subscription, self.channels, nil)?.takeRetainedValue() else {
+    private func getSample(subscription: IOReportSubscriptionRef, channels: CFMutableDictionary) -> (samples: CFDictionary, time: TimeInterval)? {
+        guard let sample = IOReportCreateSamples(subscription, channels, nil)?.takeRetainedValue() else {
             return nil
         }
         return (sample, Date().timeIntervalSince1970)
