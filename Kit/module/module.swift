@@ -264,8 +264,12 @@ open class Module {
                 reader.unlock()
                 reader.start()
             } else {
-                reader.pause()
                 reader.lock()
+                if reader.runsWhenLocked {
+                    reader.start()
+                } else {
+                    reader.pause()
+                }
             }
         }
     }
@@ -282,8 +286,12 @@ open class Module {
                 reader.unlock()
                 reader.start()
             } else {
-                reader.pause()
                 reader.lock()
+                if reader.runsWhenLocked {
+                    reader.start()
+                } else {
+                    reader.pause()
+                }
             }
         }
     }

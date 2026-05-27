@@ -15,6 +15,7 @@ public protocol Reader_p {
     var popup: Bool { get }
     var preview: Bool { get }
     var sleep: Bool { get }
+    var runsWhenLocked: Bool { get }
     
     func setup()
     func read()
@@ -103,9 +104,10 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     /// is closed. Default 5 cuts CPU ~5× for the snapshot-based readers
     /// (CPU/RAM/Battery/Sensors).
     ///
-    /// Net readers (UsageReader / ProcessReader) override to 1 because their
-    /// per-app bandwidth math is delta-based — skipping ticks would coarsen
-    /// the deltas and inflate "bytes per sample" in the chart.
+    /// Network UsageReader overrides to 1 because its callback drives the
+    /// menu-bar speed as an instantaneous rate. Network ProcessReader can use
+    /// the gate while hidden because its history rows are raw byte deltas that
+    /// the History view sums over time.
     public var popupClosedIntervalMultiplier: Int = 5
 
     private var lastGatedRead: Date?
@@ -124,6 +126,7 @@ open class Reader<T: Codable>: NSObject, ReaderInternal_p {
     /// same key). Without this flag those readers go dormant when the
     /// popup closes and the chart's time-series goes dark.
     public var selfPersists: Bool = false
+    public var runsWhenLocked: Bool { self.history || self.selfPersists }
 
     public init(_ module: ModuleType, popup: Bool = false, preview: Bool = false, history: Bool = true, selfPersists: Bool = false, callback: @escaping (T?) -> Void = {_ in }) {
         self.popup = popup

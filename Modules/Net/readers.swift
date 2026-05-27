@@ -123,7 +123,10 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     }
     
     private var interfaceID: String {
-        get { Store.shared.string(key: "Network_interface", defaultValue: self.primaryInterface) }
+        get {
+            let stored = Store.shared.string(key: "Network_interface", defaultValue: "")
+            return stored.isEmpty ? self.primaryInterface : stored
+        }
         set { Store.shared.set(key: "Network_interface", value: newValue) }
     }
     
@@ -167,9 +170,9 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     private var lastDetailsReadTS: Date = .distantPast
     
     public override func setup() {
-        // Same rationale as ProcessReader.setup: bandwidth is delta-based,
-        // so the popup-closed throttle would inflate "bytes per sample"
-        // on gated ticks and the throughput chart would look wrong.
+        // The menu-bar widget treats bandwidth as an instantaneous rate.
+        // Keep this reader at 1 Hz while hidden; gating it would aggregate
+        // multiple seconds of bytes and display them as a one-second rate.
         self.popupClosedIntervalMultiplier = 1
         self.reachability.reachable = { [weak self] in
             guard let self else { return }
@@ -270,6 +273,9 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     }
     
     private func readInterfaceBandwidth() -> Bandwidth {
+        let interfaceID = self.interfaceID
+        guard !interfaceID.isEmpty else { return Bandwidth() }
+
         var interfaceAddresses: UnsafeMutablePointer<ifaddrs>? = nil
         var totalUpload: Int64 = 0
         var totalDownload: Int64 = 0
@@ -282,12 +288,12 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
             defer { pointer = pointer?.pointee.ifa_next }
             guard let pointer = pointer else { break }
             
-            if String(cString: pointer.pointee.ifa_name) != self.interfaceID {
+            if String(cString: pointer.pointee.ifa_name) != interfaceID {
                 continue
             }
             self.usage.interface?.status = (pointer.pointee.ifa_flags & UInt32(IFF_UP)) != 0
             
-            if let wifiInterface = CWWiFiClient.shared().interface(withName: self.interfaceID) {
+            if let wifiInterface = CWWiFiClient.shared().interface(withName: interfaceID) {
                 self.usage.interface?.transmitRate = wifiInterface.transmitRate()
             } else if let raw = pointer.pointee.ifa_data {
                 let dataPtr = raw.assumingMemoryBound(to: if_data.self)
@@ -372,13 +378,14 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     }
     
     public func getDetails() {
-        guard self.interfaceID != "" else { return }
-        
         let now = Date()
         if now.timeIntervalSince(self.lastDetailsReadTS) < 15 { return }
+
+        let interfaceID = self.interfaceID
+        guard !interfaceID.isEmpty else { return }
         
         for interface in SCNetworkInterfaceCopyAll() as NSArray {
-            if let bsdName = SCNetworkInterfaceGetBSDName(interface as! SCNetworkInterface), bsdName as String == self.interfaceID,
+            if let bsdName = SCNetworkInterfaceGetBSDName(interface as! SCNetworkInterface), bsdName as String == interfaceID,
                let type = SCNetworkInterfaceGetInterfaceType(interface as! SCNetworkInterface),
                let displayName = SCNetworkInterfaceGetLocalizedDisplayName(interface as! SCNetworkInterface),
                let address = SCNetworkInterfaceGetHardwareAddressString(interface as! SCNetworkInterface) {
@@ -399,7 +406,7 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
         
         if let prefs = SCPreferencesCreate(nil, "Stats" as CFString, nil), let services = SCNetworkServiceCopyAll(prefs) as? [SCNetworkService] {
             for service in services {
-                if let interface = SCNetworkServiceGetInterface(service), let name = SCNetworkInterfaceGetBSDName(interface), name as String == self.interfaceID,
+                if let interface = SCNetworkServiceGetInterface(service), let name = SCNetworkInterfaceGetBSDName(interface), name as String == interfaceID,
                    let serviceID = SCNetworkServiceGetServiceID(service) {
                     let key = "State:/Network/Service/\(serviceID)/DNS" as CFString
                     if let settings = SCDynamicStoreCopyValue(nil, key) as? [String: Any] {
@@ -423,7 +430,9 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     }
     
     private func getWiFiDetails() {
-        if let interface = CWWiFiClient.shared().interface(withName: self.interfaceID) {
+        let interfaceID = self.interfaceID
+
+        if let interface = CWWiFiClient.shared().interface(withName: interfaceID) {
             if let ssid = interface.ssid() {
                 self.usage.wifiDetails.ssid = ssid
             } else if let cfg = interface.configuration(),
@@ -464,7 +473,7 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
                     if let arr = json["SPAirPortDataType"] as? [[String: Any]],
                        let airport = arr.first(where: { $0["spairport_airport_interfaces"] != nil }),
                        let interfaces = airport["spairport_airport_interfaces"] as? [[String: Any]],
-                       let interface = interfaces.first(where: { $0["_name"] as? String == self.interfaceID }),
+                       let interface = interfaces.first(where: { $0["_name"] as? String == interfaceID }),
                        let obj = interface["spairport_current_network_information"] as? [String: Any] {
                         
                         self.usage.wifiDetails.ssid = obj["_name"] as? String
@@ -643,13 +652,11 @@ public class ProcessReader: Reader<[Network_Process]> {
     
     public override func setup() {
         self.popup = true
-        // Don't apply the popup-closed throttle to Net readers. Their
-        // per-app bandwidth is a delta against the previous tick, so a
-        // 5×-gated tick would aggregate 5 s of bytes into one row — the
-        // throughput chart would show 5× spikes at those samples. CPU/RAM
-        // readers are the dominant energy cost anyway; leaving Net at 1 s
-        // is fine.
-        self.popupClosedIntervalMultiplier = 1
+        // nettop is one of the expensive hidden-window readers. While the
+        // popup is closed, sample process deltas every 5 seconds instead of
+        // every second; the History view sums raw byte deltas, so total usage
+        // stays correct. Unlocking the popup bypasses the gate for live detail.
+        self.popupClosedIntervalMultiplier = 5
     }
 
     public override func read() {

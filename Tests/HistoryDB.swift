@@ -444,8 +444,8 @@ final class ReaderTickTests: XCTestCase {
         XCTAssertEqual(r.reads, 2, "tick past gate window must read")
     }
 
-    /// Net readers' opt-out. Their per-tick value is a delta and gating
-    /// would inflate "bytes per sample" 5×, so they set multiplier=1.
+    /// Readers can opt out of the gate with multiplier=1. Network UsageReader
+    /// uses this because its callback feeds the menu-bar speed as a live rate.
     /// This must reproduce the popup-open behaviour even while locked.
     func testTick_multiplierOneDisablesGate() {
         let r = TickRecorder(.CPU, popup: true, history: true)

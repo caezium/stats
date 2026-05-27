@@ -117,6 +117,7 @@ class SettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     }
     
     func windowWillClose(_ notification: Notification) {
+        self.parkHistoryViewIfNeeded()
         let onClose = self.onClose
         DispatchQueue.main.async {
             onClose?()
@@ -126,6 +127,7 @@ class SettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.type == NSEvent.EventType.keyDown && event.modifierFlags.contains(.command) {
             if event.keyCode == 12 || event.keyCode == 13 {
+                self.parkHistoryViewIfNeeded()
                 self.setIsVisible(false)
                 return true
             } else if event.keyCode == 46 {
@@ -134,6 +136,13 @@ class SettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
             }
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    private func parkHistoryViewIfNeeded() {
+        guard self.title == localizedString("History") else { return }
+        self.mainView.setView(self.dashboard)
+        self.sidebarView.openMenu("Dashboard")
+        self.title = localizedString("Dashboard")
     }
     
     override func mouseUp(with: NSEvent) {
